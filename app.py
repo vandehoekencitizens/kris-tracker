@@ -9,8 +9,8 @@ import pandas as pd
 from streamlit_folium import st_folium
 from supabase import create_client
 
-# --- 1. INITIALIZATION & SUPABASE ---
-st.set_page_config(page_title="KrisTracker | Executive Command", page_icon="✈️", layout="wide")
+# --- 1. INITIALIZATION ---
+st.set_page_config(page_title="KrisTracker | Command Center", page_icon="✈️", layout="wide")
 
 @st.cache_resource
 def init_supabase():
@@ -18,7 +18,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- 2. RESTORED EXECUTIVE THEME & LOGO ---
+# --- 2. EXECUTIVE THEME & STYLING ---
 SIA_NAVY, SIA_GOLD = "#00266B", "#BD9B60"
 st.markdown(f"""
     <style>
@@ -38,46 +38,94 @@ st.markdown(f"""
         background: {SIA_GOLD}; color: {SIA_NAVY}; padding: 4px 12px;
         border-radius: 20px; font-weight: bold; font-size: 0.85em;
     }}
-    .airport-code {{ font-size: 3em; font-weight: bold; line-height: 1; }}
-    .sidebar-logo {{ display: flex; justify-content: center; padding: 20px 0; }}
-    .sidebar-logo svg {{ width: 180px; height: auto; fill: white; }}
+    .airport-code {{ font-size: 3.5em; font-weight: bold; line-height: 1; }}
+    .info-label {{ font-size: 0.8em; opacity: 0.6; text-transform: uppercase; }}
+    .info-value {{ font-weight: bold; color: {SIA_GOLD}; }}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. RESTORED AVIATION LOGIC (MACH/FT/KTS) ---
+# --- 3. THE "FULL DATA" VISUALIZER ---
+def render_flight_card(data):
+    """Extracts all available flight metadata including Gate, Terminal, and Aircraft."""
+    flights = data.get("response", {}).get("flights", [])
+    if not flights:
+        st.warning("Flight data synchronized but no leg details found.")
+        return
+
+    for f in flights:
+        # Main origin/destination info
+        for leg in f.get("legs", []):
+            # Extracting with defaults
+            origin_term = leg.get("origin", {}).get("airportTerminal", "TBA")
+            dest_term = leg.get("destination", {}).get("airportTerminal", "TBA")
+            # Aircraft type is often in a separate object or string in SIA API
+            ac_type = leg.get("aircraft", {}).get("displayName", "SIA Long-Haul")
+            gate = leg.get("gate", "TBA") # Common field name in Prod vs UAT
+
+            st.markdown(f"""
+            <div class="flight-box">
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                        <span class="status-badge">{leg['flightStatus'].upper()}</span>
+                        <h2 style="margin: 15px 0; color: white;">SQ {leg['flightNumber']}</h2>
+                        <p style="margin:0; opacity: 0.7;">{leg['operatingAirlineName']}</p>
+                    </div>
+                    <div style="text-align: right;">
+                        <span class="info-label">Equipment</span><br>
+                        <span class="info-value">{ac_type}</span><br><br>
+                        <span class="info-label">Gate</span><br>
+                        <span class="info-value">{gate}</span>
+                    </div>
+                </div>
+                
+                <div style="display: flex; justify-content: space-between; margin-top: 30px; text-align: center;">
+                    <div style="flex: 1;">
+                        <div class="airport-code">{leg['origin']['airportCode']}</div>
+                        <div class="info-label">Terminal {origin_term}</div>
+                        <div style="color: {SIA_GOLD}; font-size: 1.5em; font-weight: bold; margin-top:10px;">
+                            {leg['scheduledDepartureTime'].split('T')[1]}
+                        </div>
+                    </div>
+                    <div style="flex: 1; font-size: 3em; opacity: 0.3; align-self: center;">✈️</div>
+                    <div style="flex: 1;">
+                        <div class="airport-code">{leg['destination']['airportCode']}</div>
+                        <div class="info-label">Terminal {dest_term}</div>
+                        <div style="color: {SIA_GOLD}; font-size: 1.5em; font-weight: bold; margin-top:10px;">
+                            {leg['scheduledArrivalTime'].split('T')[1]}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+# --- 4. TELEMETRY LOGIC (RETAINED) ---
 def get_mach(gs_mps, alt_m):
     if not gs_mps or gs_mps < 1 or not alt_m: return 0.0
-    temp_k = 288.15 - (0.0065 * alt_m)
-    return gs_mps / (20.046 * math.sqrt(temp_k))
+    return gs_mps / (20.046 * math.sqrt(288.15 - (0.0065 * alt_m)))
 
 @st.cache_data(ttl=60)
-def get_fleet_cached():
-    url = "https://opensky-network.org/api/states/all"
+def get_fleet_telemetry():
     auth = (st.secrets["OPENSKY_CLIENT_ID"], st.secrets["OPENSKY_CLIENT_SECRET"])
     try:
-        r = requests.get(url, auth=auth, timeout=12)
+        r = requests.get("https://opensky-network.org/api/states/all", auth=auth, timeout=12)
         states = r.json().get("states", [])
-        sia_flights = []
+        sia = []
         for s in (states or []):
-            callsign = str(s[1]).strip() if s[1] else ""
-            if callsign.startswith(("SIA", "SQ")):
-                alt_m = s[7] if s[7] else 0
-                gs_mps = s[9] if s[9] else 0
-                sia_flights.append({
-                    "Callsign": callsign, "Registration": s[0].upper(),
-                    "Lat": s[6], "Lon": s[5],
-                    "Alt (ft)": int(alt_m * 3.28084),
-                    "GS (kts)": int(gs_mps * 1.94384),
-                    "Mach": round(get_mach(gs_mps, alt_m), 2)
+            if str(s[1]).strip().startswith(("SIA", "SQ")):
+                alt = s[7] if s[7] else 0
+                gs = s[9] if s[9] else 0
+                sia.append({
+                    "Callsign": s[1].strip(), "Registration": s[0].upper(),
+                    "Lat": s[6], "Lon": s[5], "Alt (ft)": int(alt * 3.28),
+                    "GS (kts)": int(gs * 1.94), "Mach": round(get_mach(gs, alt), 2)
                 })
-        return sia_flights
+        return sia
     except: return []
 
-# --- 4. API THROTTLING & VISUALIZER ---
-def call_sia_api_safe(endpoint, payload):
-    # Visual throttle to prevent 403 Over QPS
-    with st.status("Establishing Satellite Link...", expanded=False) as status:
-        time.sleep(1.5)
+# --- 5. API THROTTLING (RETAINED) ---
+def call_sia_throttled(endpoint, payload):
+    with st.status("Syncing with Gateway...", expanded=False) as s:
+        time.sleep(1.5) # Mandatory QPS Throttle
         url = f"https://apigw.singaporeair.com/api/uat/v2/flightstatus/{endpoint}"
         headers = {
             "accept": "*/*", "Content-Type": "application/json",
@@ -86,38 +134,17 @@ def call_sia_api_safe(endpoint, payload):
         }
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=15)
-            if res.status_code == 403:
-                status.update(label="Rate Limit Hit!", state="error")
-                return {"status": "LIMIT"}
-            status.update(label="Data Synchronized", state="complete")
+            if res.status_code == 403: 
+                s.update(label="Rate Limit!", state="error")
+                return None
+            s.update(label="Data Received", state="complete")
             return res.json()
         except: return None
 
-def render_flight_card(data):
-    for f in data.get("response", {}).get("flights", []):
-        for leg in f.get("legs", []):
-            st.markdown(f"""
-            <div class="flight-box">
-                <div style="display: flex; justify-content: space-between;">
-                    <div><span class="status-badge">{leg['flightStatus'].upper()}</span><h3>SQ {leg['flightNumber']}</h3></div>
-                    <div style="text-align:right;"><p>Fleet Type</p><strong>B777 / A350</strong></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; margin-top:20px; text-align:center;">
-                    <div style="flex:1;"><div class="airport-code">{leg['origin']['airportCode']}</div><div>{leg['origin']['airportName']}</div></div>
-                    <div style="flex:1; font-size:3em;">✈️</div>
-                    <div style="flex:1;"><div class="airport-code">{leg['destination']['airportCode']}</div><div>{leg['destination']['airportName']}</div></div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-# --- 5. AUTH GATE & SIDEBAR LOGO ---
-logo_path = "singapore-airlines.svg"
-if os.path.exists(logo_path):
-    with open(logo_path, "r") as f:
-        st.sidebar.markdown(f'<div class="sidebar-logo">{f.read()}</div>', unsafe_allow_html=True)
-
+# --- 6. AUTH & MAIN UI ---
+# (Auth code remains identical to previous version)
 if "user" not in st.session_state:
-    st.title("KrisTracker Login")
+    st.title("KrisTracker Executive Portal")
     with st.container(border=True):
         em = st.text_input("Email")
         pw = st.text_input("Password", type="password")
@@ -126,45 +153,35 @@ if "user" not in st.session_state:
                 resp = supabase.auth.sign_in_with_password({"email": em.lower().strip(), "password": pw})
                 st.session_state["user"] = resp.user
                 st.rerun()
-            except: st.error("Login Error")
+            except: st.error("Login failed")
     st.stop()
 
-# --- 6. MAIN DASHBOARD ---
-st.sidebar.write(f"Logged in: **{st.session_state.user.email}**")
-if st.sidebar.button("Logout"):
-    supabase.auth.sign_out(); del st.session_state["user"]; st.rerun()
-
-t_radar, t_route, t_flight = st.tabs(["📡 LIVE RADAR", "✈️ BY ROUTE", "🔎 BY FLIGHT NUMBER"])
+t_radar, t_search = st.tabs(["📡 LIVE RADAR", "🔎 FLIGHT SEARCH"])
 
 with t_radar:
-    fleet = get_fleet_cached()
-    col_m, col_s = st.columns([3, 1])
-    with col_m:
+    fleet = get_fleet_telemetry()
+    c_map, c_data = st.columns([3, 1])
+    with c_map:
         m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
         for ac in fleet:
-            popup = f"SQ {ac['Callsign']} | {ac['Registration']}<br>{ac['Alt (ft)']:,} ft | Mach {ac['Mach']}"
-            folium.Marker([ac['Lat'], ac['Lon']], popup=popup, icon=folium.Icon(color='orange', icon='plane')).add_to(m)
-        st_folium(m, width="100%", height=500, key="radar_fixed")
-    with col_s:
-        st.metric("Airborne", len(fleet))
-        if fleet:
-            st.dataframe(pd.DataFrame(fleet).drop(['Lat', 'Lon'], axis=1), hide_index=True)
+            popup = f"SQ {ac['Callsign']} | {ac['Alt (ft)']}ft | Mach {ac['Mach']}"
+            folium.Marker([ac['Lat'], ac['Lon']], popup=popup, icon=folium.Icon(color='orange')).add_to(m)
+        st_folium(m, width="100%", height=500, key="radar_locked")
+    with c_data:
+        st.metric("Total SIA Airborne", len(fleet))
+        st.dataframe(pd.DataFrame(fleet).drop(['Lat', 'Lon'], axis=1), hide_index=True)
 
-with t_route:
+with t_search:
     st.markdown('<div class="search-card">', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    orig, dest = c1.text_input("From", "SIN"), c2.text_input("To", "KUL")
-    date = c3.date_input("Date", key="d1")
-    if st.button("SEARCH ROUTE"):
-        res = call_sia_api_safe("getbyroute", {"originAirportCode": orig.upper(), "destinationAirportCode": dest.upper(), "scheduledDepartureDate": str(date)})
-        if res and res.get("status") == "SUCCESS": render_flight_card(res.get("data"))
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with t_flight:
-    st.markdown('<div class="search-card">', unsafe_allow_html=True)
-    f1, f2 = st.columns(2)
-    f_num, f_date = f1.text_input("Flight #", "317"), f2.date_input("Date", key="d2")
-    if st.button("SEARCH FLIGHT"):
-        res = call_sia_api_safe("getbynumber", {"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": str(f_date)})
-        if res and res.get("status") == "SUCCESS": render_flight_card(res.get("data"))
+    c1, c2 = st.columns(2)
+    f_num = c1.text_input("Flight Number", "317")
+    f_date = c2.date_input("Departure Date")
+    if st.button("RETRIEVE STATUS"):
+        res = call_sia_throttled("getbynumber", {
+            "airlineCode": "SQ", "flightNumber": f_num, 
+            "scheduledDepartureDate": f_date.strftime("%Y-%m-%d")
+        })
+        if res and res.get("status") == "SUCCESS":
+            render_flight_card(res.get("data"))
+        else: st.error("Flight not found or Rate Limit hit.")
     st.markdown('</div>', unsafe_allow_html=True)
