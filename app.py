@@ -8,7 +8,7 @@ from streamlit_folium import st_folium
 from supabase import create_client
 
 # --- 1. INITIALIZATION & SESSION RECOVERY ---
-st.set_page_config(page_title="KrisTracker Executive", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Singapore Airlines | KrisTracker", page_icon="✈️", layout="wide")
 
 @st.cache_resource
 def init_supabase():
@@ -16,7 +16,6 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# Auto-recovery for Google OAuth sessions
 if "user" not in st.session_state:
     try:
         res = supabase.auth.get_session()
@@ -25,88 +24,99 @@ if "user" not in st.session_state:
     except:
         pass
 
-# --- 2. REFINED EXECUTIVE UI ---
-SIA_DEEP_NAVY = "#000C24"     
-SIA_GOLD_ACCENT = "#D8B24A"   
-SIA_CHAMPAGNE = "#F7F3E8"     
+# --- 2. SIA OFFICIAL THEME UI (CLEAN WHITE & NAVY) ---
+SIA_NAVY = "#00266B"      # Official SIA Navy
+SIA_GOLD = "#BD9B60"      # Official SIA Gold
+SIA_LIGHT_GRAY = "#F4F4F4" # Background gray
 
 st.markdown(f"""
     <style>
     /* Global Background */
-    .stApp {{ background-color: {SIA_DEEP_NAVY}; color: {SIA_CHAMPAGNE}; }}
+    .stApp {{ background-color: white; color: {SIA_NAVY}; }}
     
-    /* Sidebar Styling */
+    /* Sidebar Styling - Dark for Branding */
     [data-testid="stSidebar"] {{ 
-        background-color: #000612 !important; 
-        border-right: 1px solid {SIA_GOLD_ACCENT}44; 
-    }}
-
-    /* LOGO FIX: Turns the black logo into SIA Gold */
-    [data-testid="stSidebarContent"] img {{
-        filter: brightness(0) saturate(100%) invert(78%) sepia(54%) saturate(436%) hue-rotate(1deg) brightness(92%) contrast(89%);
-        padding-top: 20px;
-        padding-bottom: 10px;
+        background-color: {SIA_NAVY} !important; 
+        color: white !important;
     }}
     
-    /* Input Labels: Tight Vertical Spacing */
-    label {{ 
-        color: {SIA_GOLD_ACCENT} !important; 
-        font-weight: 600 !important;
-        font-size: 0.9rem !important;
-        margin-bottom: -25px !important;
+    /* Force Sidebar text to Gold/White */
+    [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown p {{
+        color: {SIA_GOLD} !important;
+        font-weight: bold !important;
     }}
 
-    /* High Contrast Input Boxes */
+    /* Input Boxes - SIA Style */
     input {{ 
-        background-color: #FFFFFF !important; 
-        color: #000000 !important; 
-        border: 2px solid {SIA_GOLD_ACCENT} !important;
-        border-radius: 4px !important;
+        background-color: white !important; 
+        color: black !important; 
+        border: 1px solid #CCC !important;
+        border-radius: 2px !important;
+        padding: 10px !important;
     }}
     
-    /* Premium Buttons */
+    /* Main Search Card */
+    .search-card {{
+        background-color: white;
+        padding: 30px;
+        border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        border-top: 4px solid {SIA_GOLD};
+        margin-bottom: 20px;
+    }}
+    
+    /* Primary Action Buttons */
     .stButton>button {{ 
-        background-color: {SIA_GOLD_ACCENT} !important; 
-        color: #000 !important; 
-        font-weight: 700 !important;
+        background-color: {SIA_NAVY} !important; 
+        color: white !important; 
+        border-radius: 4px; 
+        border: none;
+        padding: 12px 24px;
+        font-weight: bold;
         text-transform: uppercase;
-        border-radius: 4px; border: none;
-    }}
-
-    /* Google Login Button Fix */
-    .google-btn {{
-        display: flex; align-items: center; justify-content: center;
-        background-color: #FFFFFF; color: #000000 !important;
-        padding: 12px; border-radius: 4px; text-decoration: none !important;
-        font-weight: bold; margin: 20px 0; border: 1px solid #ccc;
     }}
     
-    .flight-card {{
-        background: rgba(255, 255, 255, 0.07);
-        backdrop-filter: blur(10px);
-        padding: 25px; border-radius: 12px; border: 1px solid {SIA_GOLD_ACCENT}33;
+    /* Google Button - High Contrast */
+    .google-btn {{
+        display: block; text-align: center; background-color: #FFF; 
+        color: {SIA_NAVY} !important; padding: 12px; border-radius: 4px; 
+        text-decoration: none !important; font-weight: bold;
+        margin: 20px 0; border: 2px solid {SIA_NAVY};
+    }}
+    
+    /* Tabs styling to match screenshot */
+    .stTabs [data-baseweb="tab-list"] {{ gap: 2px; }}
+    .stTabs [data-baseweb="tab"] {{ 
+        background-color: {SIA_LIGHT_GRAY};
+        padding: 10px 20px;
+        color: #666 !important;
+    }}
+    .stTabs [aria-selected="true"] {{ 
+        background-color: white !important;
+        border-top: 3px solid {SIA_GOLD} !important;
+        color: {SIA_NAVY} !important;
+        font-weight: bold;
     }}
     </style>
     """, unsafe_allow_html=True)
 
 # --- 3. SIDEBAR AUTH ---
+# Your logo should stay white/gold in the Navy sidebar
 try:
     st.sidebar.image("singapore-airlines-1-logo-png-transparent.png", width=220)
 except:
-    st.sidebar.title("🇸🇬 KrisTracker")
+    st.sidebar.title("Singapore Airlines")
 
 if "user" not in st.session_state:
-    st.sidebar.markdown("<p style='color:#D8B24A; font-weight:bold; margin-bottom:5px;'>Member Access</p>", unsafe_allow_html=True)
+    st.sidebar.subheader("Member Access")
     
-    # GOOGLE OAUTH WITH PROMPT FIX
-    # Note: Replace URL with your actual live streamlit URL
-    target_url = "https://your-app-name.streamlit.app/" 
-    
+    # PROMPT FIX for 403: Forces Google to let you pick an account
+    # IMPORTANT: Update your-app-name.streamlit.app to your actual URL
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
         "options": {
-            "redirect_to": target_url,
-            "query_params": {"prompt": "select_account"} 
+            "redirect_to": "https://your-app-name.streamlit.app/",
+            "query_params": {"prompt": "select_account"}
         }
     })
     
@@ -116,69 +126,45 @@ if "user" not in st.session_state:
     email = st.sidebar.text_input("Email")
     pw = st.sidebar.text_input("Password", type="password")
     
-    if st.sidebar.button("Enter Lounge"):
+    if st.sidebar.button("Login"):
         try:
             resp = supabase.auth.sign_in_with_password({"email": email, "password": pw})
             st.session_state["user"] = resp.user
             st.rerun()
         except:
-            st.sidebar.error("Invalid Credentials")
+            st.sidebar.error("Invalid credentials.")
     st.stop()
 else:
     user = st.session_state["user"]
-    name = user.user_metadata.get("full_name", user.email)
-    st.sidebar.success(f"Welcome, {name}")
-    if st.sidebar.button("Log Out"):
+    st.sidebar.success(f"Welcome, {user.email}")
+    if st.sidebar.button("Logout"):
         supabase.auth.sign_out()
         del st.session_state["user"]
         st.rerun()
 
-# --- 4. LOGIC FUNCTIONS ---
-def get_sia_headers():
-    key = st.secrets["SIA_STATUS_KEY"]
-    secret = st.secrets.get("SIA_STATUS_SECRET", "")
-    ts = str(int(time.time()))
-    sig = hashlib.sha256((key + secret + ts).encode()).hexdigest()
-    return {
-        "api-key": key, "x-signature": sig, "timestamp": ts,
-        "x-csl-client-uuid": str(uuid.uuid4()), "Content-Type": "application/json"
-    }
+# --- 4. MAIN CONTENT (SIA DESIGN) ---
+st.title("Flight status")
+st.caption("Flight status information will only be available 48 hours before flight departure or arrival.")
 
-def get_live_sq_fleet():
-    url = "https://opensky-network.org/api/states/all"
-    auth = (st.secrets["OPENSKY_CLIENT_ID"], st.secrets["OPENSKY_CLIENT_SECRET"])
-    try:
-        r = requests.get(url, auth=auth, timeout=10)
-        states = r.json().get("states", [])
-        return [s for s in states if s[1] and s[1].strip().startswith("SIA")]
-    except: return []
-
-# --- 5. MAIN CONTENT ---
-st.title("🇸🇬 KrisTracker Executive")
-t1, t2 = st.tabs(["🔎 Flight Search", "📡 Fleet Radar"])
-
-with t1:
-    f_input = st.text_input("Flight Number", "SQ638").upper()
-    if st.button("Track Status"):
-        with st.spinner("Accessing SIA Gateway..."):
-            headers = get_sia_headers()
-            body = {"airlineCode": "SQ", "flightNumber": ''.join(filter(str.isdigit, f_input)), "scheduledDepartureDate": time.strftime("%Y-%m-%d")}
-            try:
-                res = requests.post("https://apigw.singaporeair.com/api/v1/flightstatus/get", headers=headers, json=body)
-                data = res.json()["data"]["response"]["flights"][0]["legs"][0]
-                st.markdown(f"""
-                    <div class="flight-card">
-                        <h3>{f_input} Status: {data['flightStatus']}</h3>
-                        <p>{data['origin']['airportCode']} ➔ {data['destination']['airportCode']}</p>
-                    </div>
-                """, unsafe_allow_html=True)
-                supabase.table("flight_history").insert({"user_id": user.id, "flight_number": f_input, "origin": data['origin']['airportCode'], "destination": data['destination']['airportCode']}).execute()
-            except: st.error("Flight data unavailable.")
+# Layout Tabs
+t1, t2 = st.tabs(["ROUTE", "FLIGHT NUMBER"])
 
 with t2:
-    if st.button("Load Live Positions"):
-        fleet = get_live_sq_fleet()
-        m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
-        for p in fleet:
-            folium.Marker([p[6], p[5]], popup=f"SQ: {p[1].strip()}", icon=folium.Icon(color='orange')).add_to(m)
-        st_folium(m, width="100%", height=500)
+    st.markdown('<div class="search-card">', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        f_num = st.text_input("Flight Number", value="SQ638").upper()
+    with col2:
+        d_date = st.date_input("Departure Date")
+    with col3:
+        st.write(" ") # Padding
+        track_btn = st.button("SEARCH")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if track_btn:
+        with st.spinner("Loading..."):
+            # Insert your existing get_sia_headers() logic and API call here
+            st.info(f"Searching for {f_num} on {d_date}...")
+
+with t1:
+    st.info("Route search coming soon to match the SIA interface.")
