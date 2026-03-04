@@ -16,7 +16,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# Catch session from OAuth redirect
+# Auto-recovery for Google OAuth sessions
 if "user" not in st.session_state:
     try:
         res = supabase.auth.get_session()
@@ -25,18 +25,38 @@ if "user" not in st.session_state:
     except:
         pass
 
-# --- 2. EXECUTIVE UI (HIGH-CONTRAST & GLASSMORPHISM) ---
+# --- 2. REFINED EXECUTIVE UI ---
 SIA_DEEP_NAVY = "#000C24"     
 SIA_GOLD_ACCENT = "#D8B24A"   
 SIA_CHAMPAGNE = "#F7F3E8"     
-SIA_CARD_BG = "rgba(255, 255, 255, 0.07)"
 
 st.markdown(f"""
     <style>
+    /* Global Background */
     .stApp {{ background-color: {SIA_DEEP_NAVY}; color: {SIA_CHAMPAGNE}; }}
-    [data-testid="stSidebar"] {{ background-color: #000612; border-right: 1px solid {SIA_GOLD_ACCENT}44; }}
     
-    /* Input Fields: Pure High-Contrast */
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {{ 
+        background-color: #000612 !important; 
+        border-right: 1px solid {SIA_GOLD_ACCENT}44; 
+    }}
+
+    /* LOGO FIX: Turns the black logo into SIA Gold */
+    [data-testid="stSidebarContent"] img {{
+        filter: brightness(0) saturate(100%) invert(78%) sepia(54%) saturate(436%) hue-rotate(1deg) brightness(92%) contrast(89%);
+        padding-top: 20px;
+        padding-bottom: 10px;
+    }}
+    
+    /* Input Labels: Tight Vertical Spacing */
+    label {{ 
+        color: {SIA_GOLD_ACCENT} !important; 
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+        margin-bottom: -25px !important;
+    }}
+
+    /* High Contrast Input Boxes */
     input {{ 
         background-color: #FFFFFF !important; 
         color: #000000 !important; 
@@ -44,33 +64,28 @@ st.markdown(f"""
         border-radius: 4px !important;
     }}
     
-    /* Buttons: Executive Gold */
+    /* Premium Buttons */
     .stButton>button {{ 
         background-color: {SIA_GOLD_ACCENT} !important; 
         color: #000 !important; 
         font-weight: 700 !important;
-        letter-spacing: 1.2px;
         text-transform: uppercase;
-        border: none; padding: 0.75rem;
-    }}
-    .stButton>button:hover {{ box-shadow: 0 0 20px {SIA_GOLD_ACCENT}88; transform: translateY(-1px); }}
-
-    /* Glassmorphism Flight Card */
-    .flight-card {{
-        background: {SIA_CARD_BG};
-        backdrop-filter: blur(12px);
-        padding: 25px; border-radius: 15px; 
-        border: 1px solid rgba(216, 178, 74, 0.3); 
-        margin-bottom: 20px;
+        border-radius: 4px; border: none;
     }}
 
+    /* Google Login Button Fix */
     .google-btn {{
-        display: block; text-align: center; background-color: #FFF; color: #000;
-        padding: 12px; border-radius: 4px; text-decoration: none; font-weight: bold;
-        margin-top: 10px; border: 1px solid #ccc;
+        display: flex; align-items: center; justify-content: center;
+        background-color: #FFFFFF; color: #000000 !important;
+        padding: 12px; border-radius: 4px; text-decoration: none !important;
+        font-weight: bold; margin: 20px 0; border: 1px solid #ccc;
     }}
     
-    h1, h2, h3 {{ color: {SIA_GOLD_ACCENT} !important; font-weight: 300 !important; }}
+    .flight-card {{
+        background: rgba(255, 255, 255, 0.07);
+        backdrop-filter: blur(10px);
+        padding: 25px; border-radius: 12px; border: 1px solid {SIA_GOLD_ACCENT}33;
+    }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -78,23 +93,30 @@ st.markdown(f"""
 try:
     st.sidebar.image("singapore-airlines-1-logo-png-transparent.png", width=220)
 except:
-    st.sidebar.title("KrisTracker")
+    st.sidebar.title("🇸🇬 KrisTracker")
 
 if "user" not in st.session_state:
-    st.sidebar.subheader("Member Access")
+    st.sidebar.markdown("<p style='color:#D8B24A; font-weight:bold; margin-bottom:5px;'>Member Access</p>", unsafe_allow_html=True)
     
-    # Google OAuth (Crucial: Update the redirect_to URL below)
+    # GOOGLE OAUTH WITH PROMPT FIX
+    # Note: Replace URL with your actual live streamlit URL
+    target_url = "https://your-app-name.streamlit.app/" 
+    
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
-        "options": {"redirect_to": "https://kristracker.streamlit.app/"} 
+        "options": {
+            "redirect_to": target_url,
+            "query_params": {"prompt": "select_account"} 
+        }
     })
+    
     st.sidebar.markdown(f'<a href="{res.url}" target="_self" class="google-btn">🏨 Sign in with Google</a>', unsafe_allow_html=True)
     
     st.sidebar.write("--- OR ---")
     email = st.sidebar.text_input("Email")
     pw = st.sidebar.text_input("Password", type="password")
     
-    if st.sidebar.button("Access Lounge"):
+    if st.sidebar.button("Enter Lounge"):
         try:
             resp = supabase.auth.sign_in_with_password({"email": email, "password": pw})
             st.session_state["user"] = resp.user
@@ -132,52 +154,31 @@ def get_live_sq_fleet():
     except: return []
 
 # --- 5. MAIN CONTENT ---
-st.title("🇸🇬 KrisTracker Executive Dashboard")
-t1, t2 = st.tabs(["🔎 Flight Status", "📡 Live Radar"])
+st.title("🇸🇬 KrisTracker Executive")
+t1, t2 = st.tabs(["🔎 Flight Search", "📡 Fleet Radar"])
 
 with t1:
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        flight_no = st.text_input("Flight Number", "SQ638").upper()
-        track_btn = st.button("Track Progress")
-    
-    if track_btn:
-        with st.spinner("Authenticating with SIA Gateway..."):
+    f_input = st.text_input("Flight Number", "SQ638").upper()
+    if st.button("Track Status"):
+        with st.spinner("Accessing SIA Gateway..."):
             headers = get_sia_headers()
-            body = {"airlineCode": "SQ", "flightNumber": ''.join(filter(str.isdigit, flight_no)), "scheduledDepartureDate": time.strftime("%Y-%m-%d")}
+            body = {"airlineCode": "SQ", "flightNumber": ''.join(filter(str.isdigit, f_input)), "scheduledDepartureDate": time.strftime("%Y-%m-%d")}
             try:
                 res = requests.post("https://apigw.singaporeair.com/api/v1/flightstatus/get", headers=headers, json=body)
                 data = res.json()["data"]["response"]["flights"][0]["legs"][0]
-                with col2:
-                    st.markdown(f"""
-                        <div class="flight-card">
-                            <h2 style="margin-top:0;">{flight_no} | {data['flightStatus']}</h2>
-                            <hr style="border-color:{SIA_GOLD_ACCENT}33;">
-                            <p style="font-size:1.2rem;"><b>{data['origin']['airportCode']}</b> → <b>{data['destination']['airportCode']}</b></p>
-                            <p>City: {data['destination']['cityName']}</p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                # History Save
-                supabase.table("flight_history").insert({"user_id": user.id, "flight_number": flight_no, "origin": data['origin']['airportCode'], "destination": data['destination']['airportCode']}).execute()
-            except:
-                st.error("Live data restricted. (Sandbox SQ638 allowed).")
+                st.markdown(f"""
+                    <div class="flight-card">
+                        <h3>{f_input} Status: {data['flightStatus']}</h3>
+                        <p>{data['origin']['airportCode']} ➔ {data['destination']['airportCode']}</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                supabase.table("flight_history").insert({"user_id": user.id, "flight_number": f_input, "origin": data['origin']['airportCode'], "destination": data['destination']['airportCode']}).execute()
+            except: st.error("Flight data unavailable.")
 
 with t2:
-    if st.button("Refresh Global Radar"):
+    if st.button("Load Live Positions"):
         fleet = get_live_sq_fleet()
         m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
         for p in fleet:
-            folium.Marker([p[6], p[5]], popup=f"SQ Flight: {p[1].strip()}", 
-                          icon=folium.Icon(color='orange', icon='plane')).add_to(m)
-        st_folium(m, width="100%", height=550)
-
-# --- 6. FOOTER HISTORY ---
-st.write("")
-try:
-    hist = supabase.table("flight_history").select("*").eq("user_id", user.id).order("tracked_at", desc=True).limit(3).execute()
-    if hist.data:
-        st.markdown(f"<h3 style='font-size:1rem;'>Recent Activity</h3>", unsafe_allow_html=True)
-        cols = st.columns(3)
-        for i, item in enumerate(hist.data):
-            cols[i].caption(f"✈️ {item['flight_number']} ({item['origin']}- {item['destination']})")
-except: pass
+            folium.Marker([p[6], p[5]], popup=f"SQ: {p[1].strip()}", icon=folium.Icon(color='orange')).add_to(m)
+        st_folium(m, width="100%", height=500)
