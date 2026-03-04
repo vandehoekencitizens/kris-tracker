@@ -18,7 +18,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- 2. THEME & LOGO ---
+# --- 2. EXECUTIVE THEME (NAVY & GOLD) ---
 SIA_NAVY, SIA_GOLD = "#00266B", "#BD9B60"
 st.markdown(f"""
     <style>
@@ -41,7 +41,7 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. OP-CENTER (DEBUG MODE RESTORED) ---
+# --- 3. OP-CENTER (DEBUG MODE) ---
 st.sidebar.title("🛠 OP-CENTER")
 debug_enabled = st.sidebar.toggle("Enable Debug Mode", value=False)
 
@@ -50,7 +50,7 @@ def log_debug(title, content):
         with st.sidebar.expander(f"DEBUG: {title}", expanded=False):
             st.write(content)
 
-# --- 4. AVIATION & RADAR LOGIC ---
+# --- 4. AVIATION & RADAR LOGIC (LOCKED) ---
 def get_mach(gs_mps, alt_m):
     if not gs_mps or gs_mps < 1 or not alt_m: return 0.0
     return gs_mps / (20.046 * math.sqrt(288.15 - (0.0065 * alt_m)))
@@ -75,7 +75,7 @@ def get_fleet():
         log_debug("OpenSky Error", str(e))
         return []
 
-# --- 5. SIA API & VISUALIZER ---
+# --- 5. SIA API & VISUALIZER (WITH JSON SAFETY) ---
 def render_flight_card(data):
     flights = data.get("response", {}).get("flights", [])
     if not flights:
@@ -106,27 +106,29 @@ def render_flight_card(data):
             """, unsafe_allow_html=True)
 
 def call_sia(endpoint, payload):
-    time.sleep(1.5) # Throttling
+    time.sleep(1.8) # Increased throttle for stability
     url = f"https://apigw.singaporeair.com/api/uat/v2/flightstatus/{endpoint}"
     headers = {
         "api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD",
         "x-csl-client-uuid": str(uuid.uuid4()), "Content-Type": "application/json"
     }
-    log_debug(f"API Request: {endpoint}", {"url": url, "payload": payload})
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
-        log_debug("API Response", res.json() if res.status_code == 200 else res.text)
-        return res.json()
+        # SAFETY CHECK: Only parse if response is JSON
+        if res.status_code == 200:
+            if "application/json" in res.headers.get("Content-Type", ""):
+                return res.json()
+            else:
+                log_debug("Non-JSON Response", res.text)
+                st.error("Server returned non-data response. Retrying usually fixes this.")
+        elif res.status_code == 403:
+            st.error("Rate Limit (QPS) hit. Please wait a moment.")
+        return None
     except Exception as e:
         st.error(f"Gateway Error: {e}")
         return None
 
-# --- 6. AUTH & LOGO ---
-logo_path = "singapore-airlines.svg"
-if os.path.exists(logo_path):
-    with open(logo_path, "r") as f:
-        st.sidebar.markdown(f'<div class="sidebar-logo">{f.read()}</div>', unsafe_allow_html=True)
-
+# --- 6. AUTH GATE ---
 if "user" not in st.session_state:
     st.title("KrisTracker Executive Portal")
     with st.container(border=True):
@@ -140,7 +142,7 @@ if "user" not in st.session_state:
             except: st.error("Login failed.")
     st.stop()
 
-# --- 7. DASHBOARD ---
+# --- 7. DASHBOARD (ALL FEATURES LOCKED) ---
 t_radar, t_route, t_flight = st.tabs(["📡 LIVE RADAR", "✈️ BY ROUTE", "🔎 BY FLIGHT NUMBER"])
 
 with t_radar:
@@ -151,15 +153,13 @@ with t_radar:
         for ac in fleet:
             popup = f"SQ {ac['Callsign']} | {ac['Alt (ft)']:,}ft | Mach {ac['Mach']}"
             folium.Marker([ac['Lat'], ac['Lon']], popup=popup, icon=folium.Icon(color='orange')).add_to(m)
-        st_folium(m, width="100%", height=500, key="radar_vFinal")
+        st_folium(m, width="100%", height=500, key="radar_resilient")
     with col_list:
         st.metric("Global Airborne", len(fleet))
         if fleet:
-            # FIXED: Check if columns exist before dropping to prevent KeyError
             df = pd.DataFrame(fleet)
             cols_to_drop = [c for c in ['Lat', 'Lon'] if c in df.columns]
             st.dataframe(df.drop(columns=cols_to_drop), hide_index=True)
-        else: st.info("No SIA telemetry found.")
 
 with t_route:
     st.markdown('<div class="search-card">', unsafe_allow_html=True)
@@ -169,13 +169,11 @@ with t_route:
     if st.button("SEARCH ROUTE"):
         res = call_sia("getbyroute", {"originAirportCode": orig.upper(), "destinationAirportCode": dest.upper(), "scheduledDepartureDate": str(date)})
         if res and res.get("status") == "SUCCESS": render_flight_card(res.get("data"))
-    st.markdown('</div>', unsafe_allow_html=True)
 
 with t_flight:
     st.markdown('<div class="search-card">', unsafe_allow_html=True)
     f1, f2 = st.columns(2)
     f_num, f_date = f1.text_input("Flight #", "317"), f2.date_input("Departure Date", key="f_date")
-    if st.button("SEARCH FLIGHT NUMBER"):
+    if st.button("SEARCH BY FLIGHT NUMBER"):
         res = call_sia("getbynumber", {"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": str(f_date)})
         if res and res.get("status") == "SUCCESS": render_flight_card(res.get("data"))
-    st.markdown('</div>', unsafe_allow_html=True)
