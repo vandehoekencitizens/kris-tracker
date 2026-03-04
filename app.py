@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit as st
 import requests
 import uuid
 import folium
@@ -33,7 +32,7 @@ st.markdown(f"""
     }}
     .flight-box {{
         background: {SIA_NAVY}; color: white; padding: 25px; border-radius: 8px;
-        border-left: 10px solid {SIA_GOLD}; margin-top: 20px;
+        border-left: 10px solid {SIA_GOLD}; margin-top: 20px; min-height: 250px;
     }}
     .status-badge {{ background: {SIA_GOLD}; color: {SIA_NAVY}; padding: 4px 12px; border-radius: 20px; font-weight: bold; }}
     .airport-code {{ font-size: 3.5em; font-weight: bold; line-height: 1; }}
@@ -42,7 +41,7 @@ st.markdown(f"""
 
 # --- 3. OP-CENTER (SOURCE SWITCHER & DEBUG) ---
 st.sidebar.title("🛠 OP-CENTER")
-api_source = st.sidebar.radio("Data Intelligence Source", ["SIA Official", "AirLabs Enhanced"], help="Switch to AirLabs if SIA is missing Aircraft Tail/Model data.")
+api_source = st.sidebar.radio("Data Intelligence Source", ["SIA Official", "AirLabs Enhanced"])
 debug_enabled = st.sidebar.toggle("Enable Debug Mode", value=False)
 
 def log_debug(title, content):
@@ -52,7 +51,6 @@ def log_debug(title, content):
 
 # --- 4. BACKUP DATA SOURCE (AIRLABS) ---
 def get_airlabs_data(flight_num):
-    """Fallback for Aircraft and Registration details."""
     try:
         api_key = st.secrets["AIRLABS_API_KEY"]
         url = f"https://airlabs.co/api/v9/flight?flight_icao=SQ{flight_num}&api_key={api_key}"
@@ -67,7 +65,7 @@ def get_airlabs_data(flight_num):
         return None
     except: return None
 
-# --- 5. AVIATION MATH & RADAR (LOCKED) ---
+# --- 5. AVIATION MATH & RADAR ---
 def get_mach(gs_mps, alt_m):
     if not gs_mps or gs_mps < 1 or not alt_m: return 0.0
     return gs_mps / (20.046 * math.sqrt(288.15 - (0.0065 * alt_m)))
@@ -90,7 +88,7 @@ def get_fleet_radar():
         return sia
     except: return "TIMEOUT"
 
-# --- 6. SIA API & ENHANCED VISUALIZER ---
+# --- 6. SIA API & ENHANCED VISUALIZER (FIXED RENDERING) ---
 def render_flight_status(data):
     flights = data.get("response", {}).get("flights", [])
     if not flights:
@@ -100,45 +98,43 @@ def render_flight_status(data):
     for f in flights:
         for leg in f.get("legs", []):
             f_num = leg.get('flightNumber', '0')
-            
-            # --- INTELLIGENT DATA SOURCING ---
             ac_type = leg.get('aircraft', {}).get('displayName', "SIA Fleet")
             reg = leg.get('aircraft', {}).get('registrationNumber', "TRACKING")
-            delay_info = ""
+            delay_html = ""
 
             if api_source == "AirLabs Enhanced":
-                with st.spinner("Fetching AirLabs metadata..."):
-                    backup = get_airlabs_data(f_num)
-                    if backup:
-                        ac_type = backup['model']
-                        reg = backup['reg']
-                        if backup['delay']:
-                            delay_info = f"<br><span style='color:#FF4B4B;'>Delay: {backup['delay']}m</span>"
+                backup = get_airlabs_data(f_num)
+                if backup:
+                    ac_type = backup['model']
+                    reg = backup['reg']
+                    if backup['delay']:
+                        delay_html = f"<br><span style='color:#FF4B4B;'>Delay: {backup['delay']}m</span>"
 
+            # FIXED: Entire block is one clean f-string for st.markdown
             st.markdown(f"""
             <div class="flight-box">
                 <div style="display: flex; justify-content: space-between;">
                     <div>
                         <span class="status-badge">{leg.get('flightStatus', 'LIVE')}</span>
-                        <h2 style="color:white; margin:10px 0;">SQ {f_num}</h2>
-                        <p style="opacity: 0.7;">{leg.get('operatingAirlineName', 'Singapore Airlines')}</p>
+                        <h1 style="color:white; margin:10px 0; font-size: 3em;">SQ {f_num}</h1>
+                        <p style="opacity: 0.7;">Singapore Airlines</p>
                     </div>
                     <div style="text-align:right;">
                         <small>AIRCRAFT / TAIL</small><br>
                         <b style="color:{SIA_GOLD};">{ac_type}</b><br>
                         <b>{reg}</b>
-                        {delay_info}
+                        {delay_html}
                     </div>
                 </div>
-                <div style="display: flex; justify-content: space-between; text-align: center; margin-top:30px;">
+                <div style="display: flex; justify-content: space-between; text-align: center; margin-top:30px; background: white; color: {SIA_NAVY}; padding: 20px; border-radius: 4px;">
                     <div style="flex:1;">
                         <div class="airport-code">{leg['origin']['airportCode']}</div>
-                        <div>{leg['scheduledDepartureTime'].split('T')[1]}</div>
+                        <div style="font-weight: bold;">{leg['scheduledDepartureTime'].split('T')[1][:5]}</div>
                     </div>
-                    <div style="flex:1; font-size:3em; opacity:0.2;">✈️</div>
+                    <div style="flex:1; font-size:3em; opacity:0.3; align-self: center;">✈️</div>
                     <div style="flex:1;">
                         <div class="airport-code">{leg['destination']['airportCode']}</div>
-                        <div>{leg['scheduledArrivalTime'].split('T')[1]}</div>
+                        <div style="font-weight: bold;">{leg['scheduledArrivalTime'].split('T')[1][:5]}</div>
                     </div>
                 </div>
             </div>
@@ -153,7 +149,6 @@ def call_sia_gateway(endpoint, payload):
     }
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
-        log_debug(f"API {endpoint}", res.json() if res.status_code == 200 else res.text)
         return res.json() if res.status_code == 200 else None
     except: return None
 
@@ -172,20 +167,19 @@ if "user" not in st.session_state:
     st.stop()
 
 # --- 8. DASHBOARD INTERFACE ---
-st.sidebar.write(f"Active User: {st.session_state.user.email}")
-t_radar, t_num, t_route = st.tabs(["📡 LIVE RADAR", "🔎 FLIGHT NUMBER", "✈️ ROUTE SEARCH"])
+t_radar, t_num, t_route = st.tabs(["📡 LIVE RADAR", "🔎 BY FLIGHT NUMBER", "✈️ BY ROUTE"])
 
 with t_radar:
     fleet = get_fleet_radar()
     if fleet == "TIMEOUT":
-        st.error("📡 Telemetry Offline. SIA Gateway Active.")
+        st.error("📡 Telemetry Offline.")
     else:
         c_m, c_l = st.columns([3, 1])
         with c_m:
             m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
             for ac in (fleet or []):
                 folium.Marker([ac['Lat'], ac['Lon']], popup=f"SQ {ac['Callsign']}", icon=folium.Icon(color='orange')).add_to(m)
-            st_folium(m, width="100%", height=500, key="radar_vEnhanced")
+            st_folium(m, width="100%", height=500, key="radar_fix")
         with c_l:
             st.metric("SIA Airborne", len(fleet) if isinstance(fleet, list) else 0)
             if isinstance(fleet, list) and fleet:
@@ -197,7 +191,7 @@ with t_num:
     c1, c2 = st.columns(2)
     f_num = c1.text_input("Flight #", "317")
     f_date = c2.date_input("Date", key="fn_date")
-    if st.button("SEARCH BY FLIGHT"):
+    if st.button("RUN SEARCH"):
         res = call_sia_gateway("getbynumber", {"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": str(f_date)})
         if res and res.get("status") == "SUCCESS": render_flight_status(res.get("data"))
     st.markdown('</div>', unsafe_allow_html=True)
@@ -207,7 +201,7 @@ with t_route:
     c1, c2, c3 = st.columns(3)
     o, d = c1.text_input("From", "SIN"), c2.text_input("To", "LHR")
     r_date = c3.date_input("Date", key="rt_date")
-    if st.button("SEARCH BY ROUTE"):
+    if st.button("RUN ROUTE SEARCH"):
         res = call_sia_gateway("getbyroute", {"originAirportCode": o.upper(), "destinationAirportCode": d.upper(), "scheduledDepartureDate": str(r_date)})
         if res and res.get("status") == "SUCCESS": render_flight_status(res.get("data"))
     st.markdown('</div>', unsafe_allow_html=True)
