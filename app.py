@@ -4,10 +4,11 @@ import hashlib
 import time
 import uuid
 import folium
+import os
 from streamlit_folium import st_folium
 from supabase import create_client
 
-# --- 1. INITIALIZATION & SESSION RECOVERY ---
+# --- 1. INITIALIZATION ---
 st.set_page_config(page_title="Singapore Airlines | KrisTracker", page_icon="✈️", layout="wide")
 
 @st.cache_resource
@@ -16,155 +17,157 @@ def init_supabase():
 
 supabase = init_supabase()
 
+# Session Recovery
 if "user" not in st.session_state:
     try:
         res = supabase.auth.get_session()
         if res and res.session:
             st.session_state["user"] = res.session.user
-    except:
-        pass
+    except: pass
 
-# --- 2. SIA OFFICIAL THEME UI (CLEAN WHITE & NAVY) ---
-SIA_NAVY = "#00266B"      # Official SIA Navy
-SIA_GOLD = "#BD9B60"      # Official SIA Gold
-SIA_LIGHT_GRAY = "#F4F4F4" # Background gray
+# --- 2. SIA BRANDED UI ---
+SIA_NAVY = "#00266B"
+SIA_GOLD = "#BD9B60"
 
 st.markdown(f"""
     <style>
-    /* Global Background */
     .stApp {{ background-color: white; color: {SIA_NAVY}; }}
+    [data-testid="stSidebar"] {{ background-color: {SIA_NAVY} !important; color: white !important; }}
+    [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown p {{ color: {SIA_GOLD} !important; font-weight: bold !important; }}
     
-    /* Sidebar Styling - Dark for Branding */
-    [data-testid="stSidebar"] {{ 
-        background-color: {SIA_NAVY} !important; 
-        color: white !important;
-    }}
-    
-    /* Force Sidebar text to Gold/White */
-    [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown p {{
-        color: {SIA_GOLD} !important;
-        font-weight: bold !important;
-    }}
-
-    /* Input Boxes - SIA Style */
-    input {{ 
-        background-color: white !important; 
-        color: black !important; 
-        border: 1px solid #CCC !important;
-        border-radius: 2px !important;
-        padding: 10px !important;
-    }}
-    
-    /* Main Search Card */
+    /* Search Card Design */
     .search-card {{
-        background-color: white;
-        padding: 30px;
-        border-radius: 4px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        border-top: 4px solid {SIA_GOLD};
-        margin-bottom: 20px;
+        background-color: white; padding: 30px; border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-top: 4px solid {SIA_GOLD};
+        margin-bottom: 20px; color: {SIA_NAVY};
     }}
     
-    /* Primary Action Buttons */
+    /* SIA Primary Button */
     .stButton>button {{ 
-        background-color: {SIA_NAVY} !important; 
-        color: white !important; 
-        border-radius: 4px; 
-        border: none;
-        padding: 12px 24px;
-        font-weight: bold;
-        text-transform: uppercase;
+        background-color: {SIA_NAVY} !important; color: white !important; 
+        border-radius: 4px; font-weight: bold; width: 100%; border: none; height: 45px;
     }}
     
-    /* Google Button - High Contrast */
+    /* Google Login Button */
     .google-btn {{
         display: block; text-align: center; background-color: #FFF; 
         color: {SIA_NAVY} !important; padding: 12px; border-radius: 4px; 
         text-decoration: none !important; font-weight: bold;
-        margin: 20px 0; border: 2px solid {SIA_NAVY};
+        border: 2px solid {SIA_NAVY}; margin-bottom: 20px;
     }}
     
-    /* Tabs styling to match screenshot */
-    .stTabs [data-baseweb="tab-list"] {{ gap: 2px; }}
-    .stTabs [data-baseweb="tab"] {{ 
-        background-color: {SIA_LIGHT_GRAY};
-        padding: 10px 20px;
-        color: #666 !important;
+    /* Custom SVG Logo Container */
+    .sidebar-logo {{
+        display: flex; justify-content: center; padding: 20px 0;
     }}
-    .stTabs [aria-selected="true"] {{ 
-        background-color: white !important;
-        border-top: 3px solid {SIA_GOLD} !important;
-        color: {SIA_NAVY} !important;
-        font-weight: bold;
-    }}
+    .sidebar-logo svg {{ width: 200px; height: auto; }}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. SIDEBAR AUTH ---
-# Your logo should stay white/gold in the Navy sidebar
-try:
-    st.sidebar.image("singapore-airlines.svg", width=220)
-except:
+# --- 3. DATA & UTILS ---
+AIRPORTS = {
+    "Singapore (SIN)": "SIN", "London (LHR)": "LHR", "Sydney (SYD)": "SYD", 
+    "Tokyo (NRT)": "NRT", "Los Angeles (LAX)": "LAX", "Hong Kong (HKG)": "HKG"
+}
+
+def get_enhanced_fleet():
+    url = "https://opensky-network.org/api/states/all"
+    auth = (st.secrets["OPENSKY_CLIENT_ID"], st.secrets["OPENSKY_CLIENT_SECRET"])
+    try:
+        r = requests.get(url, auth=auth, timeout=10)
+        states = r.json().get("states", [])
+        return [s for s in states if s[1] and s[1].strip().startswith("SIA")]
+    except: return []
+
+# --- 4. SIDEBAR & LOGO ---
+# Logic to display SVG logo in sidebar
+logo_path = "singapore-airlines.svg"
+if os.path.exists(logo_path):
+    with open(logo_path, "r") as f:
+        svg_content = f.read()
+    st.sidebar.markdown(f'<div class="sidebar-logo">{svg_content}</div>', unsafe_allow_html=True)
+else:
     st.sidebar.title("Singapore Airlines")
 
 if "user" not in st.session_state:
-    st.sidebar.subheader("Member Access")
+    st.title("KrisTracker Executive Access")
+    t_login, t_signup = st.tabs(["EXISTING MEMBER LOGIN", "CREATE NEW ACCOUNT"])
     
-    # PROMPT FIX for 403: Forces Google to let you pick an account
-    # IMPORTANT: Update your-app-name.streamlit.app to your actual URL
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "google",
-        "options": {
-            "redirect_to": "https://kristracker.streamlit.app",
-            "query_params": {"prompt": "select_account"}
-        }
-    })
-    
-    st.sidebar.markdown(f'<a href="{res.url}" target="_self" class="google-btn">🏨 Sign in with Google</a>', unsafe_allow_html=True)
-    
-    st.sidebar.write("--- OR ---")
-    email = st.sidebar.text_input("Email")
-    pw = st.sidebar.text_input("Password", type="password")
-    
-    if st.sidebar.button("Login"):
-        try:
-            resp = supabase.auth.sign_in_with_password({"email": email, "password": pw})
-            st.session_state["user"] = resp.user
-            st.rerun()
-        except:
-            st.sidebar.error("Invalid credentials.")
+    with t_login:
+        st.markdown('<div class="search-card">', unsafe_allow_html=True)
+        # OAuth Setup
+        res = supabase.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "redirect_to": "https://kristracker.streamlit.app/",
+                "query_params": {"prompt": "select_account"}
+            }
+        })
+        st.markdown(f'<a href="{res.url}" target="_self" class="google-btn">🏨 Continue with Google</a>', unsafe_allow_html=True)
+        
+        em = st.text_input("Email", key="login_email")
+        pw = st.text_input("Password", type="password", key="login_pass")
+        if st.button("LOGIN TO PORTAL"):
+            try:
+                resp = supabase.auth.sign_in_with_password({"email": em, "password": pw})
+                st.session_state["user"] = resp.user
+                st.rerun()
+            except: st.error("Login failed. Please check credentials.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with t_signup:
+        st.markdown('<div class="search-card">', unsafe_allow_html=True)
+        st.subheader("New Membership")
+        new_em = st.text_input("Enter Email", key="reg_email")
+        new_pw = st.text_input("Create Password", type="password", key="reg_pass")
+        if st.button("REGISTER NOW"):
+            try:
+                supabase.auth.sign_up({"email": new_em, "password": new_pw})
+                st.success("Registration initiated! Check your inbox for a confirmation link.")
+            except Exception as e: st.error(f"Error: {e}")
+        st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
-else:
-    user = st.session_state["user"]
-    st.sidebar.success(f"Welcome, {user.email}")
-    if st.sidebar.button("Logout"):
-        supabase.auth.sign_out()
-        del st.session_state["user"]
-        st.rerun()
 
-# --- 4. MAIN CONTENT (SIA DESIGN) ---
+# --- 5. LOGGED IN DASHBOARD ---
+user = st.session_state["user"]
+st.sidebar.success(f"Welcome, {user.email}")
+if st.sidebar.button("Logout"):
+    supabase.auth.sign_out()
+    del st.session_state["user"]
+    st.rerun()
+
 st.title("Flight status")
-st.caption("Flight status information will only be available 48 hours before flight departure or arrival.")
+t_route, t_number, t_radar = st.tabs(["ROUTE", "FLIGHT NUMBER", "LIVE RADAR"])
 
-# Layout Tabs
-t1, t2 = st.tabs(["ROUTE", "FLIGHT NUMBER"])
-
-with t2:
+with t_route:
     st.markdown('<div class="search-card">', unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        f_num = st.text_input("Flight Number", value="SQ638").upper()
-    with col2:
-        d_date = st.date_input("Departure Date")
-    with col3:
-        st.write(" ") # Padding
-        track_btn = st.button("SEARCH")
+    r1, r2, r3 = st.columns([2, 2, 1])
+    origin = r1.selectbox("From", list(AIRPORTS.keys()))
+    dest = r2.selectbox("To", list(AIRPORTS.keys()))
+    if r3.button("SEARCH ROUTE"):
+        st.info(f"Checking routes from {AIRPORTS[origin]} to {AIRPORTS[dest]}...")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if track_btn:
-        with st.spinner("Loading..."):
-            # Insert your existing get_sia_headers() logic and API call here
-            st.info(f"Searching for {f_num} on {d_date}...")
+with t_number:
+    st.markdown('<div class="search-card">', unsafe_allow_html=True)
+    n1, n2, n3 = st.columns([2, 2, 1])
+    f_num = n1.text_input("Flight Number", value="SQ638").upper()
+    d_date = n2.date_input("Departure Date")
+    if n3.button("TRACK STATUS"):
+        st.info(f"Connecting to SIA Gateway for flight {f_num}...")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-with t1:
-    st.info("Route search coming soon.")
+with t_radar:
+    st.write("Live SIA Fleet Positions (Altitude & Speed in Popup)")
+    if st.button("Refresh Global Fleet"):
+        fleet = get_enhanced_fleet()
+        m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
+        for p in fleet:
+            alt = f"{int(p[7])}m" if p[7] else "N/A"
+            spd = f"{int(p[9] * 3.6)}km/h" if p[9] else "N/A"
+            folium.Marker(
+                [p[6], p[5]], 
+                popup=f"<b>SQ {p[1].strip()}</b><br>Alt: {alt}<br>Speed: {spd}", 
+                icon=folium.Icon(color='orange', icon='plane')
+            ).add_to(m)
+        st_folium(m, width="100%", height=550)
