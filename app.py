@@ -103,7 +103,7 @@ st.markdown(f"""
 # --- 3. SIDEBAR AUTH ---
 # Your logo should stay white/gold in the Navy sidebar
 try:
-    st.sidebar.image("singapore-airlines-1-logo-png-transparent.png", width=220)
+    st.sidebar.image("singapore-airlines.svg", width=220)
 except:
     st.sidebar.title("Singapore Airlines")
 
@@ -115,7 +115,7 @@ if "user" not in st.session_state:
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
         "options": {
-            "redirect_to": "https://your-app-name.streamlit.app/",
+            "redirect_to": "https://kristracker.streamlit.app",
             "query_params": {"prompt": "select_account"}
         }
     })
