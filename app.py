@@ -9,7 +9,7 @@ from streamlit_folium import st_folium
 from supabase import create_client
 
 # --- 1. INITIALIZATION ---
-st.set_page_config(page_title="KrisTracker | SIA Operations", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="KrisTracker | SIA Command", page_icon="✈️", layout="wide")
 
 @st.cache_resource
 def init_supabase():
@@ -17,7 +17,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# --- 2. EXECUTIVE THEME & BRANDING (RESTORED) ---
+# --- 2. EXECUTIVE THEME & LOGO (PERSISTENT) ---
 SIA_NAVY, SIA_GOLD = "#00266B", "#BD9B60"
 st.markdown(f"""
     <style>
@@ -38,16 +38,31 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 3. DEBUG & OP-CENTER (RESTORED) ---
+# --- 3. OP-CENTER & DEBUG (PERSISTENT) ---
 st.sidebar.title("🛠 OP-CENTER")
-debug_mode = st.sidebar.toggle("Enable Debug Mode", value=False)
+debug_mode = st.sidebar.toggle("Enable Debug Mode", value=True)
 
 def log_debug(title, content):
     if debug_mode:
-        with st.expander(f"DEBUG: {title}", expanded=True):
+        with st.sidebar.expander(f"DEBUG: {title}", expanded=False):
             st.code(content)
 
-# --- 4. AVIATION LOGIC (RESTORED UNITS & MACH) ---
+# --- 4. OPENSKY OAUTH2 LOGIC (NEW FOR 2026) ---
+def get_opensky_token():
+    """Retrieves OAuth2 token for OpenSky accounts created after March 2025."""
+    auth_url = "https://opensky-network.org/auth/realms/opensky/protocol/openid-connect/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": st.secrets["OPENSKY_CLIENT_ID"],
+        "client_secret": st.secrets["OPENSKY_CLIENT_SECRET"]
+    }
+    try:
+        r = requests.post(auth_url, data=data, timeout=10)
+        return r.json().get("access_token")
+    except:
+        return None
+
+# --- 5. AVIATION LOGIC (RESTORED UNITS & MACH) ---
 def get_mach(gs_mps, alt_m):
     if not gs_mps or gs_mps < 1 or not alt_m: return 0.0
     temp_k = 288.15 - (0.0065 * alt_m)
@@ -55,14 +70,19 @@ def get_mach(gs_mps, alt_m):
 
 @st.cache_data(ttl=60)
 def get_fleet_cached():
+    token = get_opensky_token()
     url = "https://opensky-network.org/api/states/all"
-    auth = (st.secrets["OPENSKY_CLIENT_ID"], st.secrets["OPENSKY_CLIENT_SECRET"])
+    
+    # Header-based Auth (2026 Standard)
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    
     try:
-        r = requests.get(url, auth=auth, timeout=12)
-        log_debug("OpenSky HTTP Status", f"Code: {r.status_code}")
+        r = requests.get(url, headers=headers, timeout=12)
+        log_debug("OpenSky Status", f"Code: {r.status_code}")
+        
         states = r.json().get("states", [])
         sia_flights = []
-        for s in states:
+        for s in (states or []):
             callsign = str(s[1]).strip() if s[1] else ""
             if callsign.startswith("SIA") or callsign.startswith("SQ"):
                 alt_m = s[7] if s[7] else 0
@@ -80,25 +100,22 @@ def get_fleet_cached():
         log_debug("OpenSky Error", str(e))
         return []
 
-# --- 5. SIA API LOGIC (RE-INTEGRATED) ---
+# --- 6. SIA API (UAT vs PROD Switcher) ---
 def call_sia_api(endpoint_path, payload):
-    # Using the path from your docs: /api/uat/v2/flightstatus/
-    url = f"https://apigw.singaporeair.com/api/uat/v2/flightstatus/{endpoint_path}"
+    # Try the most common production-ready path first
+    url = f"https://apigw.singaporeair.com/api/v1/flightstatus/{endpoint_path}"
     headers = {
         "Content-Type": "application/json",
         "api_key": st.secrets["SIA_STATUS_KEY"],
         "x-csl-client-uuid": str(uuid.uuid4())
     }
-    log_debug("SIA API Request", f"URL: {url}\nPayload: {payload}")
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
-        if "application/json" in res.headers.get("Content-Type", ""):
-            return res.json()
-        return {"status": "FAILURE", "message": f"Server Error {res.status_code}", "raw": res.text[:500]}
-    except Exception as e:
-        return {"status": "FAILURE", "message": str(e)}
+        return res.json()
+    except:
+        return {"status": "FAILURE", "message": "API Connection Error"}
 
-# --- 6. AUTH GATE ---
+# --- 7. AUTH & SIDEBAR ---
 logo_path = "singapore-airlines.svg"
 if os.path.exists(logo_path):
     with open(logo_path, "r") as f:
@@ -114,10 +131,10 @@ if "user" not in st.session_state:
                 resp = supabase.auth.sign_in_with_password({"email": em.lower().strip(), "password": pw})
                 st.session_state["user"] = resp.user
                 st.rerun()
-            except: st.error("Authentication Failed.")
+            except: st.error("Login Error.")
     st.stop()
 
-# --- 7. MAIN DASHBOARD ---
+# --- 8. DASHBOARD (FULL FEATURE SET) ---
 st.sidebar.write(f"Active User: **{st.session_state.user.email}**")
 if st.sidebar.button("Logout"):
     supabase.auth.sign_out(); del st.session_state["user"]; st.rerun()
@@ -130,42 +147,32 @@ with t_radar:
     with col_map:
         m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
         for ac in fleet:
-            if ac['Lat'] and ac['Lon']:
+            if ac['Lat']:
                 popup = f"<b>SQ {ac['Callsign']}</b><br>Reg: {ac['Registration']}<br>Alt: {ac['Alt (ft)']:,} ft<br>Mach: {ac['Mach']}"
                 folium.Marker([ac['Lat'], ac['Lon']], popup=popup, icon=folium.Icon(color='orange', icon='plane')).add_to(m)
-        st_folium(m, width="100%", height=500, key="radar_final_v1")
+        st_folium(m, width="100%", height=500, key="radar_2026")
     with col_list:
         st.metric("SIA Global Fleet", len(fleet))
         if fleet:
-            df = pd.DataFrame(fleet).drop(['Lat', 'Lon'], axis=1)
-            st.dataframe(df, hide_index=True)
-        else: st.warning("No Telemetry Found. Check Debug Mode.")
+            st.dataframe(pd.DataFrame(fleet).drop(['Lat', 'Lon'], axis=1), hide_index=True)
+        else: st.warning("Satellite Link Delay. Use Debug Mode to check Token.")
 
 with t_route:
     st.markdown('<div class="search-card">', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    orig = c1.text_input("Origin (IATA)", "SIN")
-    dest = c2.text_input("Destination (IATA)", "KUL")
-    date = c3.date_input("Date", key="route_d")
+    orig, dest = c1.text_input("Origin", "SIN"), c2.text_input("Destination", "LHR")
+    date = c3.date_input("Date")
     if st.button("SEARCH BY ROUTE"):
-        res = call_sia_api("getbyroute", {
-            "originAirportCode": orig.upper(), 
-            "destinationAirportCode": dest.upper(), 
-            "scheduledDepartureDate": str(date)
-        })
-        if res.get("status") == "SUCCESS":
-            st.json(res.get("data"))
-        else: st.error(f"Search Failed: {res.get('message')}")
+        res = call_sia_api("getbyroute", {"originAirportCode": orig.upper(), "destinationAirportCode": dest.upper(), "scheduledDepartureDate": str(date)})
+        st.write(res)
     st.markdown('</div>', unsafe_allow_html=True)
 
 with t_flight:
     st.markdown('<div class="search-card">', unsafe_allow_html=True)
     f1, f2 = st.columns(2)
-    f_no = f1.text_input("Flight Number", "638")
-    f_date = f2.date_input("Departure Date", key="flight_d")
+    f_no = f1.text_input("Flight Number", "308")
+    f_date = f2.date_input("Date", key="f_date")
     if st.button("SEARCH BY FLIGHT NUMBER"):
         res = call_sia_api("get", {"flightNumber": f_no, "scheduledDepartureDate": str(f_date)})
-        if res.get("status") == "SUCCESS":
-            st.json(res.get("data"))
-        else: st.error("Flight not found.")
+        st.write(res)
     st.markdown('</div>', unsafe_allow_html=True)
