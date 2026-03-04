@@ -1,6 +1,5 @@
 streamlit
 requests
-streamlit-supabase-auth
-supabase
 folium
 streamlit-folium
+supabase
