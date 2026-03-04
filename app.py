@@ -167,4 +167,4 @@ with t2:
             st.info(f"Searching for {f_num} on {d_date}...")
 
 with t1:
-    st.info("Route search coming soon to match the SIA interface.")
+    st.info("Route search coming soon.")
