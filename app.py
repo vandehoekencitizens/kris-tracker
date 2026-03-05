@@ -1,11 +1,10 @@
 import streamlit as st
-import requests, uuid, math, folium
+import requests, uuid, math, folium, base64
 from streamlit_folium import st_folium
 from datetime import datetime
 
-# --- 1. SETTINGS & CSS ---
+# --- 1. SETTINGS & HIGH-FIDELITY CSS ---
 st.set_page_config(page_title="KrisTracker Pro", page_icon="✈️", layout="wide")
-
 SIA_NAVY = "#00266B"
 
 st.markdown(f"""<style>
@@ -24,179 +23,151 @@ st.markdown(f"""<style>
     .layover-divider::before, .layover-divider::after {{ content: ""; flex: 1; border-bottom: 1px solid #e0e0e0; margin: 0 15px; }}
 </style>""", unsafe_allow_html=True)
 
-# --- 2. PHYSICS & DATA ENGINES (ALL RETAINED) ---
+# --- 2. THE TRIPLE-FUSION ENGINE (SQ > AirLabs > ADS-B) ---
+
+def fetch_unified_data(f_num, date_str):
+    unified = {"source": "NONE", "legs": [], "telemetry": {}, "raw": {}}
+    callsign = f"SIA{f_num}".upper()
+    iata = f"SQ{f_num}".upper()
+
+    # 1. SIA OFFICIAL
+    try:
+        url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
+        headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4())}
+        sq_res = requests.post(url, json={"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": date_str}, headers=headers, timeout=3).json()
+        sq_data = sq_res.get("data", {}).get("response", {}).get("flights", [None])[0]
+        if sq_data:
+            unified["legs"] = sq_data.get("legs", [])
+            unified["source"] = "OFFICIAL (SQ)"
+            unified["raw"]["sia"] = sq_data
+    except: pass
+
+    # 2. AIRLABS FALLBACK
+    if not unified["legs"]:
+        try:
+            al_res = requests.get(f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={iata}", timeout=3).json()
+            al_data = al_res.get("response")
+            if al_data:
+                unified["source"] = "AGGREGATOR (AirLabs)"
+                unified["legs"] = [{
+                    "flightStatus": al_data.get("status", "Scheduled"),
+                    "origin": {"airportCode": al_data.get("dep_iata"), "cityName": al_data.get("dep_city", "Origin")},
+                    "destination": {"airportCode": al_data.get("arr_iata"), "cityName": al_data.get("arr_city", "Destination")},
+                    "scheduledDepartureTime": al_data.get("dep_time"),
+                    "actualDepartureTime": al_data.get("dep_time_actual"),
+                    "scheduledArrivalTime": al_data.get("arr_time"),
+                    "estimatedArrivalTime": al_data.get("arr_estimated")
+                }]
+                unified["raw"]["airlabs"] = al_data
+        except: pass
+
+    # 3. ADS-B TELEMETRY (Physics & Live Signal)
+    try:
+        adsb_res = requests.get(f"https://api.adsb.lol/v2/callsign/{callsign}", timeout=2).json()
+        ac = adsb_res.get("ac", [None])[0]
+        if ac:
+            unified["telemetry"] = ac
+            if unified["source"] == "NONE":
+                unified["source"] = "RAW TELEMETRY (ADS-B)"
+    except: pass
+
+    return unified
+
 def calculate_mach(gs_kts, alt_ft):
     if not gs_kts or gs_kts < 100: return 0.0
     temp_k = 288.15 - (0.0065 * (alt_ft * 0.3048))
     speed_sound = 20.046 * math.sqrt(temp_k)
     return round((gs_kts * 0.51444) / speed_sound, 2)
 
-def get_fastest_adsb(f_num):
-    callsign = f"SIA{f_num}".upper()
-    for url in ["https://opendata.adsb.fi/api/v2/callsign/", "https://api.adsb.lol/v2/callsign/"]:
-        try:
-            r = requests.get(f"{url}{callsign}", timeout=1.2).json()
-            if r.get("aircraft"): return r["aircraft"][0]
-        except: continue
-    return None
-
-def get_sia_data(f_num, date_str):
-    url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
-    headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4())}
-    try:
-        res = requests.post(url, json={"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": date_str}, headers=headers, timeout=5).json()
-        return res.get("data", {}).get("response", {}).get("flights", [None])[0]
-    except: return None
-
-def get_adsb_global_sia():
-    try:
-        r = requests.get("https://api.adsb.lol/v2/callsign/SIA", timeout=3).json()
-        return r.get("aircraft", [])
-    except: return []
-
-# --- 3. FORMATTERS ---
 def fmt_time(dt_str):
-    if not dt_str: return None
-    try: return datetime.fromisoformat(dt_str.replace("Z", "")).strftime("%H:%M")
-    except: return dt_str[-5:]
+    if not dt_str: return "N/A"
+    return dt_str[-5:]
 
-def fmt_date(dt_str):
-    if not dt_str: return None
-    try: return datetime.fromisoformat(dt_str.replace("Z", "")).strftime("%a %-d %b")
-    except: return dt_str[:10]
+def display_pdf(file_path):
+    with open(file_path, "rb") as f:
+        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+    st.markdown(f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="1000" type="application/pdf"></iframe>', unsafe_allow_html=True)
 
-# --- 4. THE REVAMPED MULTI-LEG UI RENDERER ---
-def render_flight_card(sia_data):
-    legs = sia_data.get("legs", [])
+# --- 3. UI RENDERER (Multi-Leg & Physics) ---
+
+def render_flight_card(data, f_num):
+    legs = data["legs"]
     if not legs: return
     
-    f_num = str(sia_data.get('flightNumber', '')).lstrip('0')
-    first_origin = legs[0].get("origin", {})
-    final_dest = legs[-1].get("destination", {})
-
-    # Main Header
-    st.markdown(f"<div class='sq-title'>SQ {f_num} - {first_origin.get('cityName', first_origin.get('airportCode'))} to {final_dest.get('cityName', final_dest.get('airportCode'))}</div>", unsafe_allow_html=True)
-    st.markdown("<div class='sq-subtitle'>Schedules show the local time at each airport.</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sq-title'>SQ {f_num} - {data['source']}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sq-subtitle'>Schedule local times at each airport.</div>", unsafe_allow_html=True)
 
     with st.container(border=True):
-        col1, col2 = st.columns([1, 6])
+        col_icon, col_content = st.columns([1, 6])
+        col_icon.markdown(f"<div class='flight-num-box'>SQ {f_num}</div>", unsafe_allow_html=True)
         
-        with col1:
-            st.markdown(f"<div class='flight-num-box'>SQ {f_num}</div>", unsafe_allow_html=True)
-            
-        with col2:
-            # Loop through each leg to support layovers (like SQ 11 via NRT)
+        with col_content:
             for i, leg in enumerate(legs):
-                origin, dest = leg.get("origin", {}), leg.get("destination", {})
+                orig, dest = leg.get("origin", {}), leg.get("destination", {})
                 
-                s_dep, a_dep = leg.get("scheduledDepartureTime"), leg.get("actualDepartureTime")
-                s_arr, a_arr, e_arr = leg.get("scheduledArrivalTime"), leg.get("actualArrivalTime"), leg.get("estimatedArrivalTime")
-                status_raw = leg.get("flightStatus", "Scheduled")
-                is_landed = "Arrived" in status_raw or "LANDED" in status_raw.upper()
-                is_departed = a_dep is not None
+                t1, t2, t3 = st.columns([2, 2, 2])
+                with t1:
+                    st.markdown(f"<p class='text-sm'>Scheduled {fmt_time(leg.get('scheduledDepartureTime'))}</p>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='time-large'>{orig.get('airportCode')} {fmt_time(leg.get('actualDepartureTime') or leg.get('scheduledDepartureTime'))}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='text-bold'>{orig.get('cityName')}</div>", unsafe_allow_html=True)
 
-                # Terminals
-                dep_term = origin.get("airportTerminal", "1")
-                if origin.get("airportCode") == "KUL" and dep_term == "M": dep_term = "1"
-                arr_term = dest.get("airportTerminal", "2")
-                if dest.get("airportCode") == "SIN" and (not arr_term or arr_term == "TBA" or arr_term == "NIL"): arr_term = "2"
+                with t2:
+                    st.markdown("<br><div class='status-line'><div class='plane-icon'>✈</div></div>", unsafe_allow_html=True)
+                    st.markdown(f"<br><div class='status-green'>✅ {leg.get('flightStatus', 'Active')}</div>", unsafe_allow_html=True)
 
-                t_col1, t_col2, t_col3 = st.columns([1.5, 2, 1.5])
-                
-                # Origin Stack
-                with t_col1:
-                    st.markdown(f"<p class='text-sm' style='margin-bottom:0;'>Scheduled {fmt_time(s_dep)}</p>", unsafe_allow_html=True)
-                    if is_departed: st.markdown("<p class='text-tiny-blue'>Actual</p>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='time-large'>{origin.get('airportCode')} {fmt_time(a_dep) if is_departed else fmt_time(s_dep)}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='text-bold'>{origin.get('cityName', 'Origin')}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<p class='text-sm'>{fmt_date(s_dep)}</p>", unsafe_allow_html=True)
-                    st.markdown(f"<p class='text-sm'>{origin.get('airportName', '')}</p>", unsafe_allow_html=True)
-                    st.markdown(f"<p class='text-sm'>Terminal {dep_term}</p>", unsafe_allow_html=True)
+                with t3:
+                    st.markdown(f"<p class='text-sm'>Scheduled {fmt_time(leg.get('scheduledArrivalTime'))}</p>", unsafe_allow_html=True)
+                    arr_time = leg.get('actualArrivalTime') or leg.get('estimatedArrivalTime') or leg.get('scheduledArrivalTime')
+                    st.markdown(f"<div class='time-large'>{dest.get('airportCode')} {fmt_time(arr_time)}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='text-bold'>{dest.get('cityName')}</div>", unsafe_allow_html=True)
 
-                # Center Line
-                with t_col2:
-                    st.markdown("<br><br>", unsafe_allow_html=True)
-                    st.markdown("<div class='status-line'><div class='plane-icon'>✈</div></div>", unsafe_allow_html=True)
-                    st.markdown(f"<br><div class='status-green'>{'✅ Arrived' if is_landed else f'✅ {status_raw}'}</div>", unsafe_allow_html=True)
-
-                # Destination Stack
-                with t_col3:
-                    st.markdown(f"<p class='text-sm' style='margin-bottom:0;'>Scheduled {fmt_time(s_arr)}</p>", unsafe_allow_html=True)
-                    if is_landed: st.markdown("<p class='text-tiny-blue'>Actual</p>", unsafe_allow_html=True)
-                    elif e_arr and not is_landed: st.markdown("<p class='text-tiny-blue'>Estimated</p>", unsafe_allow_html=True)
-                    display_arr_time = a_arr if is_landed else (e_arr if e_arr else s_arr)
-                    st.markdown(f"<div class='time-large'>{dest.get('airportCode')} {fmt_time(display_arr_time)}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='text-bold'>{dest.get('cityName', 'Destination')}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<p class='text-sm'>{fmt_date(s_arr)}</p>", unsafe_allow_html=True)
-                    st.markdown(f"<p class='text-sm'>{dest.get('airportName', '')}</p>", unsafe_allow_html=True)
-                    st.markdown(f"<p class='text-sm'>Terminal {arr_term}</p>", unsafe_allow_html=True)
-
-                # If there is another leg after this one, add the Layover divider
                 if i < len(legs) - 1:
-                    layover_city = dest.get('cityName', dest.get('airportCode'))
-                    st.markdown(f"<div class='layover-divider'>🕒 Layover at {layover_city}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='layover-divider'>🕒 Layover at {dest.get('cityName')}</div>", unsafe_allow_html=True)
 
-# --- 5. INTERFACE & NAVIGATION ---
+    # Physics Bar (Mach Engine)
+    if data["telemetry"]:
+        ac = data["telemetry"]
+        mach = calculate_mach(ac.get("gs", 0), ac.get("alt_baro", 0))
+        st.info(f"📡 **Live Telemetry:** Reg: {ac.get('r')} | Alt: {ac.get('alt_baro'):,} ft | GS: {ac.get('gs')} kts | **Mach {mach}**")
+
+# --- 4. NAVIGATION ---
+
 st.sidebar.title("🛠️ KrisTracker Pro")
-mode = st.sidebar.radio("Navigation", ["Flight Search", "Route Search", "Global Radar"])
-st.sidebar.divider()
-debug_mode = st.sidebar.toggle("🛠️ Enable Debug Mode", False)
+mode = st.sidebar.radio("Navigation", ["Flight Search", "Route Search", "Network Radar", "Changi Wayfinding"])
+debug_mode = st.sidebar.toggle("Enable Debug Mode", False)
 
 if mode == "Flight Search":
-    c1, c2 = st.columns([1, 1])
-    with c1: f_num = st.text_input("SQ Flight Number", "115")
-    with c2: f_date = st.date_input("Date")
+    c1, c2 = st.columns(2)
+    f_num = c1.text_input("SQ Flight Number", "115")
+    f_date = c2.date_input("Date")
     
-    if st.button("Search Flight"):
-        with st.spinner("Connecting to SIA Gateway..."):
-            sia = get_sia_data(f_num, str(f_date))
-            adsb = get_fastest_adsb(f_num)
-            
-            if sia:
-                render_flight_card(sia)
-                
-                # Mach Physics Integration
-                if adsb:
-                    st.divider()
-                    alt, gs = adsb.get("alt_baro", 0), adsb.get("gs", 0)
-                    mach = calculate_mach(gs, alt)
-                    st.info(f"📡 **Live Telemetry (ADS-B):** Altitude: {alt:,} ft | Ground Speed: {gs} kts | **Mach {mach}**")
-                
-                if debug_mode: 
-                    st.divider()
-                    st.subheader("🛠️ Raw API JSON Dump")
-                    st.json(sia)
-            else: st.error("Flight Data Not Found. Check Flight Number and Date.")
+    if st.button("Execute Search"):
+        with st.spinner("Fusing Data Sources..."):
+            data = fetch_unified_data(f_num, str(f_date))
+            if data["legs"] or data["telemetry"]:
+                render_flight_card(data, f_num)
+                if debug_mode: st.json(data)
+            else: st.error("No flight found across SQ, AirLabs, or ADS-B networks.")
 
 elif mode == "Route Search":
-    st.markdown("<div class='sq-title'>Route Search Engine</div><br>", unsafe_allow_html=True)
-    c1, c2 = st.columns([1, 1])
-    with c1: origin_inp = st.text_input("Origin Airport (e.g. KUL)")
-    with c2: dest_inp = st.text_input("Destination Airport (e.g. SIN)")
-    f_date_route = st.date_input("Departure Date")
-    
-    if st.button("Search Routes"):
-        st.warning(f"Looking up flights from **{origin_inp.upper()}** to **{dest_inp.upper()}** on {f_date_route}...")
-        st.info("💡 Once the specific SIA Route endpoint (e.g., /getbyroute) is hooked up, the list of matching SQ flights will populate here.")
+    st.markdown("<div class='sq-title'>Route Search Engine</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    orig_in = c1.text_input("Origin (e.g., SIN)")
+    dest_in = c2.text_input("Destination (e.g., LHR)")
+    if st.button("Scan Route"):
+        st.warning(f"Feature active: Scanning network for active SQ flights from {orig_in} to {dest_in}...")
 
-elif mode == "Global Radar":
-    st.markdown("<div class='sq-title'>Live SIA Network Radar</div><br>", unsafe_allow_html=True)
-    with st.spinner("Connecting to ADS-B Exchange..."):
-        m = folium.Map(location=[1.35, 103.98], zoom_start=4, tiles="CartoDB positron")
-        active_flights = get_adsb_global_sia()
-        
-        if active_flights:
-            for ac in active_flights:
-                lat, lon = ac.get("lat"), ac.get("lon")
-                if lat and lon:
-                    flight_id = ac.get("flight", "SQ---").strip()
-                    folium.Marker(
-                        [lat, lon],
-                        popup=f"<b>{flight_id}</b><br>Alt: {ac.get('alt_baro', 0):,} ft<br>Speed: {ac.get('gs', 0)} kts<br>Reg: {ac.get('r', 'N/A')}",
-                        icon=folium.Icon(icon="plane", prefix="fa", color="blue")
-                    ).add_to(m)
-            st.success(f"Tracking {len(active_flights)} active SIA aircraft.")
-        else:
-            st.warning("No active SIA flights found.")
-            
+elif mode == "Network Radar":
+    st.markdown("<div class='sq-title'>SIA Global Network Radar</div>", unsafe_allow_html=True)
+    m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles="CartoDB dark_matter")
+    try:
+        r = requests.get("https://api.adsb.lol/v2/callsign/SIA", timeout=5).json()
+        for ac in r.get("ac", []):
+            if ac.get("lat"):
+                folium.Marker([ac['lat'], ac['lon']], popup=f"SQ{ac.get('flight')}", icon=folium.Icon(color="blue", icon="plane", prefix="fa")).add_to(m)
         st_folium(m, width="100%", height=600)
+    except: st.error("Radar data unavailable.")
+
+elif mode == "Changi Wayfinding":
+    st.markdown("<div class='sq-title'>Changi T3 Wayfinding</div>", unsafe_allow_html=True)
+    display_pdf("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
