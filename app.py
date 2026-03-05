@@ -48,14 +48,22 @@ def estimate_landing(speed_kph, dist_km):
     return arrival.strftime("%H:%M Local")
 
 # --- 5. DATA ENGINES (SIA + AIRLABS FAILOVER) ---
-def get_airlabs_live(f_num):
-    try:
-        url = f"https://airlabs.co/api/v9/flight?flight_icao=SQ{f_num}&api_key={st.secrets['AIRLABS_API_KEY']}"
-        res = requests.get(url, timeout=5).json()
-        log_debug("AirLabs Response", res)
-        return res.get("response")
-    except: return None
 
+def get_airlabs_data(f_num, mode="live"):
+    """Enhanced to check both Live and Schedule endpoints"""
+    api_key = st.secrets['AIRLABS_API_KEY']
+    # If live fails, we automatically try the schedule/history endpoint
+    endpoint = "flight" if mode == "live" else "schedules"
+    param = "flight_icao" if mode == "live" else "flight_number"
+    
+    url = f"https://airlabs.co/api/v9/{endpoint}?{param}=SQ{f_num}&api_key={api_key}"
+    try:
+        res = requests.get(url, timeout=5).json()
+        data = res.get("response")
+        # Schedules return a list, Live returns an object
+        if isinstance(data, list) and len(data) > 0: return data[0]
+        return data
+    except: return None
 def call_sia_gateway(endpoint, payload):
     """Retained: Original SIA API Caller"""
     url = f"https://apigw.singaporeair.com/api/uat/v2/flightstatus/{endpoint}"
@@ -75,47 +83,33 @@ def call_sia_gateway(endpoint, payload):
         return None
 
 # --- 6. RENDERER (NO-LEAK DESIGN) ---
-def render_flight_status(data, force_fnum=None):
+def render_flight_status(data, f_num_override=None):
     flights = data.get("response", {}).get("flights", []) if data else []
     
-    # AUTO-FAILOVER: If SIA is empty, try AirLabs
-    if not flights and force_fnum:
-        live = get_airlabs_live(force_fnum)
-        if live:
-            # Create a mock flights structure so renderer works
-            flights = [{"legs": [{"flightNumber": force_fnum, "flightStatus": live.get("status", "ACTIVE")}]}]
-        else:
-            st.error(f"🛑 Flight SQ{force_fnum} not found in SIA or AirLabs systems.")
-            return
-    elif not flights:
-        st.error("🛑 No flights found for this query.")
+    # NEW AGGRESSIVE FALLBACK CHAIN
+    live = None
+    if f_num_override:
+        # 1. Try Live Tracking
+        live = get_airlabs_data(f_num_override, mode="live")
+        # 2. If not in air, try Schedules
+        if not live:
+            live = get_airlabs_data(f_num_override, mode="schedules")
+            if live: log_debug("AirLabs Schedule Fallback", live)
+
+    if not flights and not live:
+        st.error(f"🛑 Flight SQ{f_num_override} is not in the air and no schedule was found.")
         return
 
-    for f in flights:
-        for leg in f.get("legs", []):
-            f_num = leg.get('flightNumber', force_fnum)
-            live = get_airlabs_live(f_num) if api_source == "AirLabs Enhanced" or not data else None
-            
-            # Metadata Merge
-            ac_type = live.get("model", leg.get("aircraft", {}).get("displayName", "SIA Jet"))
-            reg = live.get("reg_number", leg.get("aircraft", {}).get("registrationNumber", "9V-???"))
-            status = (live.get("status", leg.get("flightStatus", "Active"))).upper()
-            
-            # HTML (Flat construction to prevent rendering bugs)
-            html = (
-                f"<div class='flight-box'>"
-                f"<div style='display:flex; justify-content:space-between;'>"
-                f"<div><span class='status-badge'>{status}</span><h1 style='color:white; margin:10px 0;'>SQ {f_num}</h1></div>"
-                f"<div style='text-align:right;'><b style='color:{SIA_GOLD};'>{ac_type}</b><br><small>Tail: {reg}</small></div>"
-                f"</div><div style='display:flex; justify-content:space-between; align-items:center; margin-top:25px; background:white; color:{SIA_NAVY}; padding:15px; border-radius:6px;'>"
-                f"<div style='text-align:center; flex:1;'><div style='font-size:2em; font-weight:bold;'>{leg.get('origin', {}).get('airportCode', 'SIN')}</div><div>Gate: {live.get('dep_gate', 'TBA') if live else 'TBA'}</div></div>"
-                f"<div style='flex:1; text-align:center; font-size:2em; opacity:0.2;'>✈️</div>"
-                f"<div style='text-align:center; flex:1;'><div style='font-size:2em; font-weight:bold;'>{leg.get('destination', {}).get('airportCode', '---')}</div><div>Gate: {live.get('arr_gate', 'TBA') if live else 'TBA'}</div></div>"
-                f"</div>"
-                f"<div class='telemetry-footer'>📡 Telemetry: Spd: {live.get('speed', '0') if live else '---'}km/h | Alt: {live.get('alt', '0') if live else '---'}ft | Est. Arrival: {estimate_landing(live.get('speed', 0), 500) if live else '---'}</div>"
-                f"</div>"
-            )
-            st.markdown(html, unsafe_allow_html=True)
+    # Use Schedule data if SIA is down
+    ac_type = "SIA Aircraft"
+    reg = "9V-???"
+    status = "SCHEDULED"
+    
+    if live:
+        # AirLabs keys differ between 'flight' and 'schedules' endpoints
+        ac_type = live.get("model") or live.get("aircraft_icao") or "SIA Jet"
+        reg = live.get("reg_number") or "9V-TBA"
+        status = (live.get("status") or "Scheduled").upper()
 
 # --- 7. AUTH GATE (RETAINED) ---
 if "user" not in st.session_state:
