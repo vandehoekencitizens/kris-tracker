@@ -4,7 +4,7 @@ from streamlit_folium import st_folium
 from supabase import create_client
 from datetime import datetime, timedelta
 
-# --- 1. INITIALIZATION ---
+# --- 1. INITIALIZATION & AUTH ---
 st.set_page_config(page_title="KrisTracker Master", page_icon="✈️", layout="wide")
 
 @st.cache_resource
@@ -12,119 +12,152 @@ def init_supabase():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 supabase = init_supabase()
 
-# --- 2. EXECUTIVE UI STYLES ---
+# --- 2. THEME & SCREENSHOT-ACCURATE CSS ---
 SIA_NAVY, SIA_GOLD = "#00266B", "#BD9B60"
 st.markdown(f"""<style>
-    .stApp {{ background-color: white; color: {SIA_NAVY}; }}
+    .stApp {{ background-color: #f9f9f9; color: {SIA_NAVY}; }}
     [data-testid="stSidebar"] {{ background-color: {SIA_NAVY} !important; }}
     [data-testid="stSidebar"] * {{ color: white !important; }}
-    .flight-box {{ background: {SIA_NAVY}; color: white; padding: 25px; border-radius: 12px; border-left: 10px solid {SIA_GOLD}; margin-bottom: 20px; }}
-    .status-badge {{ background: {SIA_GOLD}; color: {SIA_NAVY}; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 11px; }}
-    .countdown-timer {{ background: rgba(189, 155, 96, 0.15); padding: 12px; border-radius: 8px; margin: 15px 0; border: 1px dashed {SIA_GOLD}; font-family: 'Courier New', monospace; text-align: center; color: {SIA_GOLD}; font-weight: bold; }}
-    .telemetry-footer {{ background: rgba(255,255,255,0.05); padding: 10px; border-radius: 0 0 8px 8px; margin-top: 15px; font-family: monospace; font-size: 12px; border-top: 1px solid rgba(255,255,255,0.1); }}
+    .layover-divider {{ border-top: 1px solid #ddd; margin: 25px 0; position: relative; }}
+    .layover-text {{ background: #f9f9f9; padding: 0 15px; position: absolute; top: -12px; left: 50px; font-size: 14px; color: #666; display: flex; align-items: center; }}
+    .search-card {{ background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); border-top: 4px solid {SIA_GOLD}; margin-bottom: 25px; }}
 </style>""", unsafe_allow_html=True)
 
-# --- 3. PHYSICS & TIME ENGINES ---
+# --- 3. RETAINED CORE ENGINES (Physics & Data) ---
 def get_mach(gs_mps, alt_m):
+    """Retained: Original Mach Logic"""
     if not gs_mps or gs_mps < 1: return 0.0
     return round(gs_mps / (20.046 * math.sqrt(288.15 - (0.0065 * alt_m))), 2)
 
-def get_countdown(iso_time_str):
-    try:
-        target = datetime.fromisoformat(iso_time_str.replace('Z', ''))
-        diff = target - datetime.now()
-        if diff.total_seconds() < 0: return "🏃 FLIGHT DEPARTED"
-        hours, remainder = divmod(int(diff.total_seconds()), 3600)
-        minutes, _ = divmod(remainder, 60)
-        return f"⏳ {hours}h {minutes}m UNTIL DEPARTURE"
-    except: return "🕒 TIME PENDING"
-
-# --- 4. DATA API ENGINES ---
 def get_airlabs_data(f_num):
+    """Retained: AirLabs Failover"""
     api_key = st.secrets['AIRLABS_API_KEY']
-    for mode in ["flight", "schedules"]:
-        url = f"https://airlabs.co/api/v9/{mode}?flight_number=SQ{f_num}&api_key={api_key}"
-        try:
-            res = requests.get(url, timeout=5).json()
-            data = res.get("response")
-            if data: return data[0] if isinstance(data, list) else data
-        except: continue
-    return None
+    url = f"https://airlabs.co/api/v9/schedules?flight_number=SQ{f_num}&api_key={api_key}"
+    try:
+        res = requests.get(url, timeout=5).json()
+        return res.get("response") if res.get("response") else None
+    except: return None
 
 def call_sia_gateway(endpoint, payload):
+    """Retained: Documentation-compliant SIA Caller"""
     url = f"https://apigw.singaporeair.com/api/uat/v2/flightstatus/{endpoint}"
-    headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4()), "Content-Type": "application/json"}
+    headers = {
+        "api_key": st.secrets["SIA_STATUS_KEY"], 
+        "x-csl-client-id": "SPD", 
+        "x-csl-client-uuid": str(uuid.uuid4()), 
+        "Content-Type": "application/json"
+    }
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
         return res.json() if res.status_code == 200 else None
     except: return None
 
-# --- 5. RENDERER (WITH TERMINAL TRANSLATION) ---
+# --- 4. RENDERER (Screenshot Accurate + Layover Logic) ---
 def render_flight_status(sia_data, force_fnum=None):
     flights = sia_data.get("data", {}).get("response", {}).get("flights", []) if sia_data else []
-    live = get_airlabs_data(force_fnum) if force_fnum else None
-
-    if not flights and not live:
-        st.error(f"🛑 No live data for SQ{force_fnum}. Check flight number or date.")
+    
+    if not flights:
+        st.error(f"🛑 No live data for SQ{force_fnum}.")
         return
 
-    # Failover to AirLabs if SIA Gateway is silent
-    if not flights and live:
-        flights = [{"legs": [{"flightNumber": force_fnum, "origin": {"airportCode": live.get("dep_iata")}, "destination": {"airportCode": live.get("arr_iata")}}]}]
-
     for f in flights:
-        # Translate 'M' to 'Terminal 1' for KUL
-        raw_terminal = f.get("origin", {}).get("airportTerminal", "TBA")
-        display_terminal = "Terminal 1" if raw_terminal == "M" else raw_terminal
+        origin_city = f.get("origin", {}).get("cityName", "Unknown")
+        dest_city = f.get("destination", {}).get("cityName", "Unknown")
         
-        for leg in f.get("legs", []):
-            f_num = leg.get('flightNumber', force_fnum)
-            status = (live.get("status") if live else leg.get("flightStatus", "Scheduled")).upper()
-            countdown = get_countdown(leg.get("scheduledDepartureTime", ""))
+        # Screenshot Style Header
+        st.markdown(f"<h2 style='color:{SIA_NAVY}; margin-bottom:0;'>SQ {force_fnum} - {origin_city} to {dest_city}</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#666; font-size:14px; margin-bottom:20px;'>Schedules show the local time at each airport.</p>", unsafe_allow_html=True)
+        
+        # Main Card Container
+        st.markdown('<div style="background:white; border:1px solid #eee; border-radius:4px; display:flex; box-shadow:0 2px 4px rgba(0,0,0,0.05);">', unsafe_allow_html=True)
+        
+        # Left Sidebar (Flight Number)
+        st.markdown(f'<div style="flex:0 0 120px; border-right:1px solid #eee; display:flex; align-items:center; justify-content:center; padding:40px 0;"><h2 style="margin:0;">SQ {force_fnum}</h2></div>', unsafe_allow_html=True)
+        
+        # Right Content Area
+        st.markdown('<div style="flex:1; padding:30px;">', unsafe_allow_html=True)
+        
+        legs = f.get("legs", [])
+        for idx, leg in enumerate(legs):
+            # Layover Logic (Screenshot #3)
+            if idx > 0:
+                layover_city = leg.get("origin", {}).get("cityName")
+                st.markdown(f'<div class="layover-divider"><div class="layover-text">🕒 Layover at {layover_city}</div></div><br>', unsafe_allow_html=True)
 
-            html = (
-                f"<div class='flight-box'>"
-                f"<div style='display:flex; justify-content:space-between;'>"
-                f"<div><span class='status-badge'>{status}</span><h1 style='color:white; margin:10px 0;'>SQ {f_num}</h1></div>"
-                f"<div style='text-align:right;'><b style='color:{SIA_GOLD};'>{live.get('model', 'SIA Jet') if live else 'Boeing 737-800'}</b><br><small>Tail: {live.get('reg_number', '9V-SIA') if live else '9V-SIA'}</small></div>"
-                f"</div>"
-                f"<div class='countdown-timer'>{countdown}</div>"
-                f"<div style='display:flex; justify-content:space-between; align-items:center; margin-top:15px; background:white; color:{SIA_NAVY}; padding:20px; border-radius:8px;'>"
-                f"<div style='text-align:center; flex:1;'><div style='font-size:2em; font-weight:bold;'>{leg.get('origin', {}).get('airportCode')}</div><div>{display_terminal}</div></div>"
-                f"<div style='flex:1; text-align:center; font-size:2.2em; opacity:0.15;'>✈️</div>"
-                f"<div style='text-align:center; flex:1;'><div style='font-size:2em; font-weight:bold;'>{leg.get('destination', {}).get('airportCode')}</div><div>Gate: {live.get('arr_gate', 'TBA') if live else 'TBA'}</div></div>"
-                f"</div>"
-                f"<div class='telemetry-footer'>📡 Telemetry: Spd {live.get('speed', '0') if live else '---'}km/h | Mach {get_mach(live.get('speed', 0)*0.27, 10000) if live else '---'}</div>"
-                f"</div>"
-            )
-            st.markdown(html, unsafe_allow_html=True)
+            # Extract Times & Terminal Translation (KUL correction)
+            dep_time = leg.get("scheduledDepartureTime")[-5:]
+            arr_time = leg.get("scheduledArrivalTime")[-5:]
+            dep_date = datetime.fromisoformat(leg.get("scheduledDepartureTime")).strftime("%a %d %b")
+            
+            dep_term = leg.get("origin", {}).get("airportTerminal", "1")
+            if leg.get("origin", {}).get("airportCode") == "KUL" and dep_term == "M": dep_term = "1"
 
-# --- 6. AUTH & TABS ---
+            # Leg HTML
+            st.markdown(f"""
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+                <div style="flex:1;">
+                    <div style="color:{SIA_NAVY}; font-size:12px; font-weight:bold;">Scheduled</div>
+                    <div style="display:flex; align-items:baseline; color:{SIA_NAVY};">
+                        <span style="font-size:32px; font-weight:bold; margin-right:10px;">{leg.get('origin', {}).get('airportCode')}</span>
+                        <span style="font-size:32px;">{dep_time}</span>
+                    </div>
+                    <div style="font-weight:bold; font-size:14px;">{leg.get('origin', {}).get('cityName')}</div>
+                    <div style="font-size:13px; color:#666; margin-top:10px;">{dep_date}</div>
+                    <div style="font-size:13px; color:#666;">{leg.get('origin', {}).get('airportName')}</div>
+                    <div style="font-size:13px; color:#666;">Terminal {dep_term}</div>
+                </div>
+                <div style="flex:1; display:flex; flex-direction:column; align-items:center; padding-top:25px;">
+                    <div style="width:100%; height:1px; background:#ddd; position:relative;"><span style="position:absolute; right:0; top:-12px; font-size:18px;">✈️</span></div>
+                    <div style="margin-top:20px; color:#28a745; font-weight:bold; font-size:14px;">✔ {leg.get('flightStatus')}</div>
+                </div>
+                <div style="flex:1; padding-left:40px;">
+                    <div style="color:{SIA_NAVY}; font-size:12px; font-weight:bold;">Scheduled</div>
+                    <div style="display:flex; align-items:baseline; color:{SIA_NAVY};">
+                        <span style="font-size:32px; font-weight:bold; margin-right:10px;">{leg.get('destination', {}).get('airportCode')}</span>
+                        <span style="font-size:32px;">{arr_time}</span>
+                    </div>
+                    <div style="font-weight:bold; font-size:14px;">{leg.get('destination', {}).get('cityName')}</div>
+                    <div style="font-size:13px; color:#666; margin-top:40px;">{leg.get('destination', {}).get('airportName')}</div>
+                    <div style="font-size:13px; color:#666;">Terminal {leg.get('destination', {}).get('airportTerminal', '2')}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown('</div></div>', unsafe_allow_html=True)
+
+# --- 5. AUTH & TABS ---
 if "user" not in st.session_state:
     st.title("KrisTracker Executive Portal")
-    with st.form("Login"):
-        if st.form_submit_button("SIGN IN AS AUTHORIZED USER"):
-            st.session_state.user = True # Simplified for testing
-            st.rerun()
+    with st.form("auth"):
+        u, p = st.text_input("Email"), st.text_input("Password", type="password")
+        if st.form_submit_button("LOGIN"):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": u, "password": p})
+                st.session_state.user = res.user
+                st.rerun()
+            except: st.error("Failed")
     st.stop()
 
 t_radar, t_num, t_route = st.tabs(["📡 RADAR", "🔎 FLIGHT #", "✈️ ROUTE"])
 
 with t_radar:
-    m = folium.Map(location=[2.74, 101.70], zoom_start=8, tiles='CartoDB dark_matter')
+    m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
     st_folium(m, width="100%", height=500)
 
 with t_num:
+    st.markdown('<div class="search-card">', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
-    f_in = c1.text_input("Flight #", "115")
-    d_in = c2.date_input("Departure Date")
-    if st.button("EXECUTE LIVE TRACK"):
+    f_in, d_in = c1.text_input("Flight #", "11"), c2.date_input("Date")
+    if st.button("TRACK FLIGHT"):
         res = call_sia_gateway("getbynumber", {"airlineCode": "SQ", "flightNumber": f_in, "scheduledDepartureDate": str(d_in)})
         render_flight_status(res, force_fnum=f_in)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 with t_route:
+    st.markdown('<div class="search-card">', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    o, d, dt = c1.text_input("From", "KUL"), c2.text_input("To", "SIN"), c3.date_input("Date", key="rt_date")
+    o, d, dt = c1.text_input("From", "SIN"), c2.text_input("To", "LHR"), c3.date_input("Date", key="rt_date")
     if st.button("SEARCH ROUTE"):
         res = call_sia_gateway("getbyroute", {"originAirportCode": o.upper(), "destinationAirportCode": d.upper(), "scheduledDepartureDate": str(dt)})
         render_flight_status(res)
+    st.markdown('</div>', unsafe_allow_html=True)
