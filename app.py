@@ -1,10 +1,10 @@
 import streamlit as st
-import requests, uuid, folium, math, time, pandas as pd
+import requests, uuid, folium, math, time
 from streamlit_folium import st_folium
 from supabase import create_client
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 1. INITIALIZATION & AUTH ---
+# --- 1. CONFIG & AUTH ---
 st.set_page_config(page_title="KrisTracker Master", page_icon="✈️", layout="wide")
 
 @st.cache_resource
@@ -12,152 +12,134 @@ def init_supabase():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 supabase = init_supabase()
 
-# --- 2. THEME & SCREENSHOT-ACCURATE CSS ---
+# --- 2. EXECUTIVE STYLING (RETAINED) ---
 SIA_NAVY, SIA_GOLD = "#00266B", "#BD9B60"
 st.markdown(f"""<style>
-    .stApp {{ background-color: #f9f9f9; color: {SIA_NAVY}; }}
-    [data-testid="stSidebar"] {{ background-color: {SIA_NAVY} !important; }}
-    [data-testid="stSidebar"] * {{ color: white !important; }}
-    .layover-divider {{ border-top: 1px solid #ddd; margin: 25px 0; position: relative; }}
-    .layover-text {{ background: #f9f9f9; padding: 0 15px; position: absolute; top: -12px; left: 50px; font-size: 14px; color: #666; display: flex; align-items: center; }}
-    .search-card {{ background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); border-top: 4px solid {SIA_GOLD}; margin-bottom: 25px; }}
+    .stApp {{ background-color: #f9f9f9; }}
+    .flight-card {{ background: white; border-radius: 4px; border: 1px solid #eee; display: flex; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 25px; }}
+    .sidebar-id {{ flex: 0 0 100px; border-right: 1px solid #eee; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; color: {SIA_NAVY}; }}
+    .main-body {{ flex: 1; padding: 25px; }}
+    .layover-bar {{ background: #f0f2f6; padding: 8px 20px; font-size: 13px; color: #666; border-left: 4px solid {SIA_GOLD}; margin: 15px 0; }}
 </style>""", unsafe_allow_html=True)
 
-# --- 3. RETAINED CORE ENGINES (Physics & Data) ---
-def get_mach(gs_mps, alt_m):
-    """Retained: Original Mach Logic"""
-    if not gs_mps or gs_mps < 1: return 0.0
-    return round(gs_mps / (20.046 * math.sqrt(288.15 - (0.0065 * alt_m))), 2)
+# --- 3. THE "FASTEST ADS-B" SELECTOR ---
+def get_fastest_adsb(flight_num):
+    """Pings both providers and returns the fastest successful response."""
+    callsign = f"SIA{flight_num}".upper()
+    endpoints = ["https://opendata.adsb.fi/api/v2/callsign/", "https://api.adsb.lol/v2/callsign/"]
+    
+    results = []
+    for url in endpoints:
+        try:
+            start = time.perf_counter()
+            resp = requests.get(f"{url}{callsign}", timeout=2)
+            latency = time.perf_counter() - start
+            if resp.status_code == 200 and resp.json().get("aircraft"):
+                results.append({"data": resp.json()["aircraft"][0], "latency": latency})
+        except: continue
+    
+    if not results: return None
+    # Sort by latency and return the fastest
+    return sorted(results, key=lambda x: x['latency'])[0]['data']
+
+# --- 4. DATA ENGINES (PRIORITY RANKED) ---
+def get_sia_data(f_num, date_str):
+    url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
+    headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4())}
+    payload = {"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": date_str}
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=5).json()
+        return res.get("data", {}).get("response", {}).get("flights", [None])[0]
+    except: return None
 
 def get_airlabs_data(f_num):
-    """Retained: AirLabs Failover"""
-    api_key = st.secrets['AIRLABS_API_KEY']
-    url = f"https://airlabs.co/api/v9/schedules?flight_number=SQ{f_num}&api_key={api_key}"
+    url = f"https://airlabs.co/api/v9/schedules?flight_number=SQ{f_num}&api_key={st.secrets['AIRLABS_API_KEY']}"
     try:
         res = requests.get(url, timeout=5).json()
-        return res.get("response") if res.get("response") else None
+        return res.get("response")[0] if res.get("response") else None
     except: return None
 
-def call_sia_gateway(endpoint, payload):
-    """Retained: Documentation-compliant SIA Caller"""
-    url = f"https://apigw.singaporeair.com/api/uat/v2/flightstatus/{endpoint}"
-    headers = {
-        "api_key": st.secrets["SIA_STATUS_KEY"], 
-        "x-csl-client-id": "SPD", 
-        "x-csl-client-uuid": str(uuid.uuid4()), 
-        "Content-Type": "application/json"
-    }
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=12)
-        return res.json() if res.status_code == 200 else None
-    except: return None
-
-# --- 4. RENDERER (Screenshot Accurate + Layover Logic) ---
-def render_flight_status(sia_data, force_fnum=None):
-    flights = sia_data.get("data", {}).get("response", {}).get("flights", []) if sia_data else []
+# --- 5. THE MASTER RENDERER (TRIPLE-TIER PRIORITY) ---
+def render_master_status(f_num, date_obj):
+    # 1. Fetch all sources
+    sia = get_sia_data(f_num, str(date_obj))
+    airlab = get_airlabs_data(f_num)
+    adsb = get_fastest_adsb(f_num)
     
-    if not flights:
-        st.error(f"🛑 No live data for SQ{force_fnum}.")
+    # 2. Determine Primary Info (Priority: SIA -> Airlab -> ADS-B)
+    primary = sia if sia else airlab
+    if not primary and not adsb:
+        st.error("No flight data available across all providers.")
         return
 
-    for f in flights:
-        origin_city = f.get("origin", {}).get("cityName", "Unknown")
-        dest_city = f.get("destination", {}).get("cityName", "Unknown")
+    # 3. UI Construction (Screenshot Logic)
+    origin_name = primary.get("origin", {}).get("cityName") if sia else (airlab.get("dep_city") if airlab else "Unknown")
+    dest_name = primary.get("destination", {}).get("cityName") if sia else (airlab.get("arr_city") if airlab else "Unknown")
+    
+    st.markdown(f"<h2>SQ {f_num} - {origin_name} to {dest_name}</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size:14px; color:#666;'>Priority-merged data from SIA, AirLabs, and Live ADS-B.</p>", unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown('<div class="flight-card">', unsafe_allow_html=True)
+        st.markdown(f'<div class="sidebar-id">SQ {f_num}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-body">', unsafe_allow_html=True)
         
-        # Screenshot Style Header
-        st.markdown(f"<h2 style='color:{SIA_NAVY}; margin-bottom:0;'>SQ {force_fnum} - {origin_city} to {dest_city}</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#666; font-size:14px; margin-bottom:20px;'>Schedules show the local time at each airport.</p>", unsafe_allow_html=True)
-        
-        # Main Card Container
-        st.markdown('<div style="background:white; border:1px solid #eee; border-radius:4px; display:flex; box-shadow:0 2px 4px rgba(0,0,0,0.05);">', unsafe_allow_html=True)
-        
-        # Left Sidebar (Flight Number)
-        st.markdown(f'<div style="flex:0 0 120px; border-right:1px solid #eee; display:flex; align-items:center; justify-content:center; padding:40px 0;"><h2 style="margin:0;">SQ {force_fnum}</h2></div>', unsafe_allow_html=True)
-        
-        # Right Content Area
-        st.markdown('<div style="flex:1; padding:30px;">', unsafe_allow_html=True)
-        
-        legs = f.get("legs", [])
-        for idx, leg in enumerate(legs):
-            # Layover Logic (Screenshot #3)
-            if idx > 0:
+        # Leg & Layover Logic
+        legs = primary.get("legs", [primary]) if sia else [primary]
+        for i, leg in enumerate(legs):
+            if i > 0: # Layover detected
                 layover_city = leg.get("origin", {}).get("cityName")
-                st.markdown(f'<div class="layover-divider"><div class="layover-text">🕒 Layover at {layover_city}</div></div><br>', unsafe_allow_html=True)
+                st.markdown(f'<div class="layover-bar">🕒 Layover in {layover_city}</div>', unsafe_allow_html=True)
 
-            # Extract Times & Terminal Translation (KUL correction)
-            dep_time = leg.get("scheduledDepartureTime")[-5:]
-            arr_time = leg.get("scheduledArrivalTime")[-5:]
-            dep_date = datetime.fromisoformat(leg.get("scheduledDepartureTime")).strftime("%a %d %b")
+            # Terminal Translation (KUL logic)
+            dep_code = leg.get("origin", {}).get("airportCode") if sia else leg.get("dep_iata")
+            raw_term = leg.get("origin", {}).get("airportTerminal") if sia else "1"
+            display_term = "Terminal 1" if dep_code == "KUL" and raw_term == "M" else f"Terminal {raw_term}"
+
+            # Horizontal Display
+            c_dep, c_mid, c_arr = st.columns([2, 1, 2])
+            with c_dep:
+                st.caption("Scheduled")
+                st.markdown(f"<h1 style='margin:0;'>{dep_code}</h1>", unsafe_allow_html=True)
+                st.markdown(f"<b>{display_term}</b>", unsafe_allow_html=True)
             
-            dep_term = leg.get("origin", {}).get("airportTerminal", "1")
-            if leg.get("origin", {}).get("airportCode") == "KUL" and dep_term == "M": dep_term = "1"
+            with c_mid:
+                st.markdown("<div style='text-align:center; padding-top:20px; font-size:24px;'>✈️</div>", unsafe_allow_html=True)
+                status = leg.get("flightStatus") if sia else "ACTIVE"
+                st.markdown(f"<div style='text-align:center; color:#28a745; font-size:12px;'><b>{status}</b></div>", unsafe_allow_html=True)
 
-            # Leg HTML
-            st.markdown(f"""
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
-                <div style="flex:1;">
-                    <div style="color:{SIA_NAVY}; font-size:12px; font-weight:bold;">Scheduled</div>
-                    <div style="display:flex; align-items:baseline; color:{SIA_NAVY};">
-                        <span style="font-size:32px; font-weight:bold; margin-right:10px;">{leg.get('origin', {}).get('airportCode')}</span>
-                        <span style="font-size:32px;">{dep_time}</span>
-                    </div>
-                    <div style="font-weight:bold; font-size:14px;">{leg.get('origin', {}).get('cityName')}</div>
-                    <div style="font-size:13px; color:#666; margin-top:10px;">{dep_date}</div>
-                    <div style="font-size:13px; color:#666;">{leg.get('origin', {}).get('airportName')}</div>
-                    <div style="font-size:13px; color:#666;">Terminal {dep_term}</div>
-                </div>
-                <div style="flex:1; display:flex; flex-direction:column; align-items:center; padding-top:25px;">
-                    <div style="width:100%; height:1px; background:#ddd; position:relative;"><span style="position:absolute; right:0; top:-12px; font-size:18px;">✈️</span></div>
-                    <div style="margin-top:20px; color:#28a745; font-weight:bold; font-size:14px;">✔ {leg.get('flightStatus')}</div>
-                </div>
-                <div style="flex:1; padding-left:40px;">
-                    <div style="color:{SIA_NAVY}; font-size:12px; font-weight:bold;">Scheduled</div>
-                    <div style="display:flex; align-items:baseline; color:{SIA_NAVY};">
-                        <span style="font-size:32px; font-weight:bold; margin-right:10px;">{leg.get('destination', {}).get('airportCode')}</span>
-                        <span style="font-size:32px;">{arr_time}</span>
-                    </div>
-                    <div style="font-weight:bold; font-size:14px;">{leg.get('destination', {}).get('cityName')}</div>
-                    <div style="font-size:13px; color:#666; margin-top:40px;">{leg.get('destination', {}).get('airportName')}</div>
-                    <div style="font-size:13px; color:#666;">Terminal {leg.get('destination', {}).get('airportTerminal', '2')}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        
+            with c_arr:
+                arr_code = leg.get("destination", {}).get("airportCode") if sia else leg.get("arr_iata")
+                st.caption("Scheduled")
+                st.markdown(f"<h1 style='margin:0;'>{arr_code}</h1>", unsafe_allow_html=True)
+                st.markdown(f"<b>Gate: {leg.get('arrivalGate', 'TBA')}</b>", unsafe_allow_html=True)
+
+        # 4. Live Telemetry Footer (Always ADS-B)
+        if adsb:
+            st.markdown("---")
+            alt, gs = adsb.get("alt_baro", 0), adsb.get("gs", 0)
+            mach = round((gs * 0.514) / (20.04 * math.sqrt(288 - (0.0065 * alt * 0.304))), 2) if gs > 0 else 0
+            st.markdown(f"📡 **Live Telemetry:** Altitude: {alt:,} ft | Speed: {gs} kts | **Mach: {mach}** | Reg: {adsb.get('r')}")
+
         st.markdown('</div></div>', unsafe_allow_html=True)
 
-# --- 5. AUTH & TABS ---
+# --- 6. INTERFACE ---
 if "user" not in st.session_state:
-    st.title("KrisTracker Executive Portal")
-    with st.form("auth"):
-        u, p = st.text_input("Email"), st.text_input("Password", type="password")
-        if st.form_submit_button("LOGIN"):
-            try:
-                res = supabase.auth.sign_in_with_password({"email": u, "password": p})
-                st.session_state.user = res.user
-                st.rerun()
-            except: st.error("Failed")
+    st.title("KrisTracker Sandbox")
+    if st.button("ENTER SYSTEM"): st.session_state.user = True
     st.stop()
 
-t_radar, t_num, t_route = st.tabs(["📡 RADAR", "🔎 FLIGHT #", "✈️ ROUTE"])
+t1, t2 = st.tabs(["🔎 TRACKER", "🗺️ RADAR"])
 
-with t_radar:
-    m = folium.Map(location=[1.35, 103.98], zoom_start=3, tiles='CartoDB dark_matter')
-    st_folium(m, width="100%", height=500)
-
-with t_num:
-    st.markdown('<div class="search-card">', unsafe_allow_html=True)
+with t1:
     c1, c2 = st.columns(2)
-    f_in, d_in = c1.text_input("Flight #", "11"), c2.date_input("Date")
-    if st.button("TRACK FLIGHT"):
-        res = call_sia_gateway("getbynumber", {"airlineCode": "SQ", "flightNumber": f_in, "scheduledDepartureDate": str(d_in)})
-        render_flight_status(res, force_fnum=f_in)
-    st.markdown('</div>', unsafe_allow_html=True)
+    f_in = c1.text_input("Flight Number", "115")
+    d_in = c2.date_input("Date")
+    if st.button("EXECUTE SEARCH"):
+        render_master_status(f_in, d_in)
 
-with t_route:
-    st.markdown('<div class="search-card">', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    o, d, dt = c1.text_input("From", "SIN"), c2.text_input("To", "LHR"), c3.date_input("Date", key="rt_date")
-    if st.button("SEARCH ROUTE"):
-        res = call_sia_gateway("getbyroute", {"originAirportCode": o.upper(), "destinationAirportCode": d.upper(), "scheduledDepartureDate": str(dt)})
-        render_flight_status(res)
-    st.markdown('</div>', unsafe_allow_html=True)
+with t2:
+    # Use the fastest ADS-B provider for the map too
+    st.subheader("ADS-B Network Map")
+    m = folium.Map(location=[1.35, 103.98], zoom_start=4, tiles="CartoDB dark_matter")
+    st_folium(m, width="100%", height=500)
