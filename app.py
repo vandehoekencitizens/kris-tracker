@@ -115,7 +115,27 @@ def fetch_search_data(f_num, date_str):
     except: pass
     return unified
 
-# --- 4. UI COMPONENTS ---
+# --- 4. PERFORMANCE FIX: CACHED RADAR DATA ---
+
+@st.cache_data(ttl=60) # Only re-fetch from API every 60 seconds
+def get_cached_airlabs_data(api_key):
+    """Prevents the 'Reloading' glitch by keeping plane data in memory."""
+    try:
+        res = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={api_key}").json()
+        return res.get("response", [])
+    except:
+        return []
+
+@st.cache_data(ttl=300)
+def get_cached_flight_track(api_key, flight_iata):
+    """Caches the flight path (live trail) to keep map interaction smooth."""
+    try:
+        res = requests.get(f"https://airlabs.co/api/v9/track?api_key={api_key}&flight_iata={flight_iata}").json()
+        return res.get("response", [])
+    except:
+        return []
+
+# --- 5. UI COMPONENTS ---
 
 def render_search_manifest(data):
     """The heavy detailed data view for Search results."""
@@ -188,10 +208,10 @@ def render_fr24_card(flight_iata, telemetry=None):
                 <div><span class="spec-label">GROUNDSPEED</span><br><b>{telemetry.get('gs', 0)} kts</b></div>
             </div>""", unsafe_allow_html=True)
 
-# --- 5. INTERACTIVE RADAR (AIRLABS ONLY + IMPROVEMENTS) ---
+# --- 6. INTERACTIVE RADAR (AIRLABS ONLY + PERSISTENCE) ---
 
 def show_interactive_radar():
-    # PERSISTENT STATE - Retains center/zoom during clicks
+    # Retain Map Center/Zoom during clicks
     if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
     if "map_zoom" not in st.session_state: st.session_state.map_zoom = 4
 
@@ -205,8 +225,9 @@ def show_interactive_radar():
             <video width="280" autoplay loop muted><source src="data:video/mp4;base64,{vid_b64}" type="video/mp4"></video>
             <p style="color:{SIA_NAVY}; font-weight:bold; margin-top:15px;">Syncing with AirLabs Global Feed...</p>
         </div>""", unsafe_allow_html=True)
-        try: planes = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
-        except: planes = []
+        
+        # Use Cached function to prevent map blanking
+        planes = get_cached_airlabs_data(st.secrets['AIRLABS_API_KEY'])
     load_placeholder.empty()
 
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="CartoDB dark_matter")
@@ -221,20 +242,20 @@ def show_interactive_radar():
             folium.Marker([lat, lon], tooltip=f_iata, icon=folium.DivIcon(html=html, icon_size=(28, 28))).add_to(m)
 
     with col_map:
+        # Key 'radar_main' ensures Streamlit tracks this specific map instance
         map_data = st_folium(m, width="100%", height=800, key="radar_main")
-        # Save center/zoom to session state to prevent "reverting"
+        
+        # Save state when user moves map
         if map_data.get("center"): st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
         if map_data.get("zoom"): st.session_state.map_zoom = map_data["zoom"]
 
     clicked = map_data.get("last_object_clicked_tooltip")
     with col_info:
         if clicked:
-            # LIVE TRAIL - Fetches and draws path for selected aircraft
-            try:
-                track = requests.get(f"https://airlabs.co/api/v9/track?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={clicked}").json().get("response", [])
-                if track:
-                    folium.PolyLine([[t['lat'], t['lng']] for t in track if 'lat' in t], color=SIA_GOLD, weight=2).add_to(m)
-            except: pass
+            # LIVE TRAIL - Fetches path for selected aircraft
+            track = get_cached_flight_track(st.secrets['AIRLABS_API_KEY'], clicked)
+            if track:
+                folium.PolyLine([[t['lat'], t['lng']] for t in track if 'lat' in t], color=SIA_GOLD, weight=2).add_to(m)
 
             p_data = next((x for x in planes if x.get('flight_iata') == clicked), {})
             render_fr24_card(clicked, telemetry=p_data)
@@ -245,7 +266,7 @@ def show_interactive_radar():
                     st.markdown(f"**{p.get('flight_iata','SQ')}** | {p.get('alt',0):,} ft | {p.get('gs',0)} kts")
                     st.divider()
 
-# --- 6. NAVIGATION (EXACTLY AS PROVIDED) ---
+# --- 7. NAVIGATION (EXACTLY AS PROVIDED) ---
 
 menu = st.sidebar.radio("MODE", ["📡 Radar", "🔍 Search", "🗺️ Wayfinding"])
 
