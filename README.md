@@ -20,6 +20,7 @@
 Ensure you have **Python 3.9+** installed, then install the required dependencies:
 ```bash
 pip install streamlit requests folium streamlit-folium
+```bash
 
 ### 2. API Keys Configuration
 Create a hidden folder named .streamlit in your root directory and add a secrets.toml file with your credentials:
