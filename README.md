@@ -28,8 +28,15 @@
 Install the required Python libraries:
 ```bash
 pip install streamlit requests folium streamlit-folium
-2. API CredentialsCreate a file at .streamlit/secrets.toml in your project folder:Ini, TOML# .streamlit/secrets.toml
+---
+2. API Credentials
+Create a file at .streamlit/secrets.toml in your project folder:
+```bash
 SIA_STATUS_KEY = "YOUR_SIA_GATEWAY_API_KEY"
 AIRLABS_API_KEY = "YOUR_AIRLABS_V9_API_KEY"
-3. Required AssetsFor the UI to function correctly, ensure these files are in your root directory:SQ loading screen.mp4 — Radar loading video.f5c530aa-d922-4920-9313-63a11c7f2921.png — Custom aircraft map marker.Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf — Wayfinding guide.Aircraft Photos: 9V-SMI.jpg, 9V-SKY.jpg, 9V-MBO.jpg, 9V-SCK.avif, 9V-SWR.jpg.🖥️ UsageLaunch the dashboard from your terminal:Bashstreamlit run app.py
-⚙️ Unit & Logic ReferenceMetricSource Unit (Raw)Display UnitConversion FactorAltitudeMetersFeet$\times 3.28084$GroundspeedKM/HKnots$\times 0.539957$Data PriorityAirLabsSIA GatewayAirLabs Priority🎨 BrandingThe interface is strictly themed with official Singapore Airlines colors:SIA Navy: #00266BSIA Gold: #BD9B60Accent Yellow: #FFC107
+---
+3. Required AssetsFor the UI to function correctly, ensure these files are in your root directory:
+SQ loading screen.mp4 — Radar loading video.f5c530aa-d922-4920-9313-63a11c7f2921.png — Custom aircraft map marker.Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf — Wayfinding guide.Aircraft Photos: 9V-SMI.jpg, 9V-SKY.jpg, 9V-MBO.jpg, 9V-SCK.avif, 9V-SWR.jpg.🖥️ UsageLaunch the dashboard from your terminal:Bashstreamlit run app.py
+---
+⚙️ Unit & Logic ReferenceMetricSource Unit (Raw)Display UnitConversion FactorAltitudeMetersFeet$\times 3.28084$GroundspeedKM/HKnots$\times 0.539957$Data PriorityAirLabsSIA GatewayAirLabs Priority
+
