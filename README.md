@@ -1,5 +1,3 @@
-Gemini said
-Here is a comprehensive README.md designed for your repository. It includes clear setup instructions, the feature list, and a copy-paste ready structure.
 
 ✈️ KrisTracker Pro: Singapore Airlines Live Operations Dashboard
 KrisTracker Pro is a high-fidelity flight tracking and manifest visualization tool built for Singapore Airlines (SIA) operations. It fuses official SIA API data with AirLabs global telemetry to provide a unified "Flightradar24-style" experience, complete with aircraft imagery, live trails, and Changi Airport wayfinding.
