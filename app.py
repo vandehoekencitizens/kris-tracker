@@ -4,12 +4,12 @@ from streamlit_folium import st_folium
 from datetime import datetime, timezone, timedelta
 from math import radians, cos, sin, asin, sqrt
 
-# --- 1. SETTINGS & CSS ---
+# --- 1. CORE STYLING & ASSETS ---
 st.set_page_config(page_title="KrisTracker Pro", page_icon="✈️", layout="wide")
 SIA_NAVY, SIA_GOLD, FR_YELLOW = "#00266B", "#BD9B60", "#ffc107"
 
 st.markdown(f"""<style>
-    [data-testid="stSidebar"] {{ min-width: 300px !important; }}
+    [data-testid="stSidebar"] {{ min-width: 400px !important; max-width: 400px !important; }}
     .fr-header {{ display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid #444; }}
     .fr-callsign {{ color: {FR_YELLOW}; font-size: 28px; font-weight: 900; }}
     .fr-type {{ background: #4a6491; color: white; padding: 2px 8px; border-radius: 4px; font-size: 14px; font-weight: bold; }}
@@ -21,9 +21,11 @@ st.markdown(f"""<style>
     .section-header {{ border-bottom: 1px solid #ddd; padding-bottom: 5px; margin: 20px 0 10px 0; color: #444; font-weight: bold; font-size: 12px; text-transform: uppercase; }}
     .progress-bar-bg {{ width:100%; height:8px; background:#e0e0e0; border-radius:4px; margin: 8px 0; position: relative; }}
     .progress-bar-fill {{ height:100%; background:{SIA_GOLD}; border-radius:4px; }}
+    .status-card {{ background: white; padding: 20px; border-radius: 12px; border: 1px solid #eee; border-left: 8px solid {SIA_GOLD}; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
+    .terminal-pill {{ background: {SIA_NAVY}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
 </style>""", unsafe_allow_html=True)
 
-# --- 2. CORE HELPERS & DATA ---
+# --- 2. HELPER FUNCTIONS ---
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371 
@@ -39,21 +41,21 @@ def get_b64(file_path):
     return ""
 
 def get_ac_image(ac_code):
-    mapping = {
-        "A359": "9V-SMI.jpg", "A388": "9V-SKY.jpg", "B38M": "9V-MBO.jpg",
-        "78X": "9V-SCK.avif", "B78X": "9V-SCK.avif", "77W": "9V-SWR.jpg"
-    }
+    mapping = {"A359": "9V-SMI.jpg", "A388": "9V-SKY.jpg", "B38M": "9V-MBO.jpg", "78X": "9V-SCK.avif", "B78X": "9V-SCK.avif", "77W": "9V-SWR.jpg"}
     return mapping.get(str(ac_code).upper().strip())
 
 def fmt_t(dt_str): 
     if not dt_str: return "---"
-    return dt_str[11:16] if "T" in dt_str else dt_str[-8:-3]
+    return dt_str[11:16] if "T" in dt_str else dt_str[-8:-3] if ":" in dt_str else dt_str
+
+# --- 3. DATA FUSION ENGINE ---
 
 def fetch_sia_official(f_num, date_str):
     try:
         url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
         headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4())}
-        res = requests.post(url, json={"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": date_str}, headers=headers, timeout=5).json()
+        payload = {"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": date_str}
+        res = requests.post(url, json=payload, headers=headers, timeout=5).json()
         return res.get("data", {}).get("response", {}).get("flights", [None])[0]
     except: return None
 
@@ -66,54 +68,40 @@ def get_airlabs_live(flight_iata):
 def get_flight_trail(flight_iata):
     try:
         url = f"https://airlabs.co/api/v9/track?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={flight_iata}"
-        history = requests.get(url, timeout=5).json().get("response", [])
-        return [[p['lat'], p['lng']] for p in history if 'lat' in p]
+        res = requests.get(url, timeout=5).json().get("response", [])
+        return [[p['lat'], p['lng']] for p in res if 'lat' in p]
     except: return []
 
-# --- 3. UI SECTIONS ---
+# --- 4. UI COMPONENTS ---
 
 def render_fr24_card(flight_iata):
-    """The detailed Sidebar for the Interactive Radar"""
+    """Radar Sidebar Detail Card"""
     al = get_airlabs_live(flight_iata)
     if not al:
-        st.error("No live data available.")
+        st.error("No live data available for this flight.")
         return
 
-    st.markdown(f"""
-        <div class="fr-header"><span class="fr-callsign">{flight_iata}</span>
-        <span class="fr-type">{al.get('aircraft_icao', '---')}</span></div>
-        <div style="font-size:15px; margin-bottom:15px; color:#555;">Singapore Airlines</div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown(f'<div class="fr-header"><span class="fr-callsign">{flight_iata}</span><span class="fr-type">{al.get("aircraft_icao", "---")}</span></div>', unsafe_allow_html=True)
     img = get_ac_image(al.get('aircraft_icao'))
     if img: st.image(img, use_container_width=True)
 
-    # City Pair & UTC
     c1, c2, c3 = st.columns([2,1,2])
     with c1:
-        st.markdown(f'<div class="fr-city">{al.get("dep_iata", "---")}</div>', unsafe_allow_html=True)
-        st.markdown('<div class="utc-offset">+08 (UTC +08:00)</div>', unsafe_allow_html=True)
-    with c2: st.markdown("<h2 style='text-align:center; color:#ddd; margin-top:5px;'>✈</h2>", unsafe_allow_html=True)
+        st.markdown(f'<div class="fr-city">{al.get("dep_iata", "---")}</div><div class="utc-offset">+08 (UTC +08:00)</div>', unsafe_allow_html=True)
+    with c2: st.markdown("<h2 style='text-align:center; color:#ddd;'>✈</h2>", unsafe_allow_html=True)
     with c3:
-        st.markdown(f'<div class="fr-city" style="text-align:right;">{al.get("arr_iata", "---")}</div>', unsafe_allow_html=True)
-        st.markdown('<div class="utc-offset" style="text-align:right;">+08 (UTC +08:00)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="fr-city" style="text-align:right;">{al.get("arr_iata", "---")}</div><div class="utc-offset" style="text-align:right;">+08 (UTC +08:00)</div>', unsafe_allow_html=True)
 
-    # Progress & Distance
     if al.get('lat') and al.get('arr_lat'):
         d_total = haversine(al['dep_lat'], al['dep_lng'], al['arr_lat'], al['arr_lng'])
         d_rem = haversine(al['lat'], al['lng'], al['arr_lat'], al['arr_lng'])
         d_cov = d_total - d_rem
         pct = max(0, min(100, (d_cov / d_total) * 100))
         ete_mins = int((d_rem / al.get('speed', 400)) * 60) if al.get('speed', 0) > 0 else 0
-        st.markdown(f"""
-            <div style="margin-top:15px;">
-                <div class="dist-text">{int(d_cov)} km covered</div>
-                <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%;"></div></div>
-                <div class="dist-text" style="text-align:right;">{int(d_rem)} km, in {ete_mins // 60:02d}:{ete_mins % 60:02d}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div style="margin-top:10px;"><div class="dist-text">{int(d_cov)} km covered</div>
+            <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:{pct}%;"></div></div>
+            <div class="dist-text" style="text-align:right;">{int(d_rem)} km, in {ete_mins // 60:02d}:{ete_mins % 60:02d}</div></div>""", unsafe_allow_html=True)
 
-    # Schedule & Aircraft
     st.markdown(f"""<div class="fr-grid">
         <div><span class="spec-label">Actual Dep</span><br><b>{fmt_t(al.get('dep_actual'))}</b></div>
         <div><span class="spec-label">Est. Arr</span><br><b style="color:green;">{fmt_t(al.get('arr_estimated'))}</b></div>
@@ -122,70 +110,68 @@ def render_fr24_card(flight_iata):
     st.markdown("<div class='section-header'>Aircraft Details</div>", unsafe_allow_html=True)
     st.markdown(f"""<div class="fr-grid">
         <div style="grid-column: span 2;"><span class="spec-label">Type</span><br><b>{al.get('model', '---')}</b></div>
-        <div><span class="spec-label">Registration</span><br><b>{al.get('reg_number', '---')}</b></div>
-        <div><span class="spec-label">Altitude</span><br><b>{al.get('alt', 0):,} ft</b></div>
+        <div><span class="spec-label">Reg</span><br><b>{al.get('reg_number', '---')}</b></div>
+        <div><span class="spec-label">Alt</span><br><b>{al.get('alt', 0):,} ft</b></div>
     </div>""", unsafe_allow_html=True)
 
-def show_flight_status():
-    """Restored: Flight Search Feature"""
-    st.title("🔍 Flight Status Search")
-    f_num = st.text_input("Enter Flight Number (e.g., 103)", "103")
-    date_val = st.date_input("Departure Date", datetime.now())
-    if st.button("Check Status"):
-        res = fetch_sia_official(f_num, date_val.strftime("%Y-%m-%d"))
-        if res:
-            st.success(f"SQ{f_num} - {res.get('flightStatus', 'Unknown')}")
-            st.json(res)
-        else:
-            st.error("Flight not found.")
-
-def show_wayfinding():
-    """Restored: Wayfinding Menu"""
-    st.title("📍 Airport Wayfinding")
-    st.info("Interactive Terminal Maps & Gate Navigation coming soon.")
-    # Add your map code here...
-
-# --- 4. MAIN INTERACTIVE RADAR ---
+# --- 5. PAGE MODULES ---
 
 def show_interactive_radar():
     if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
     if "map_zoom" not in st.session_state: st.session_state.map_zoom = 5
 
     col_info, col_map = st.columns([1.5, 2])
-
-    try: 
-        planes = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
+    try: planes = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
     except: planes = []
 
     with col_map:
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="CartoDB dark_matter")
         icon_b64 = get_b64("f5c530aa-d922-4920-9313-63a11c7f2921.png")
-        
         for p in planes:
             if p.get('lat'):
-                angle = p.get('dir', 0)
-                html = f'<div style="transform: rotate({angle}deg);"><img src="data:image/png;base64,{icon_b64}" width="28"></div>'
+                html = f'<div style="transform: rotate({p.get("dir",0)}deg);"><img src="data:image/png;base64,{icon_b64}" width="28"></div>'
                 folium.Marker([p['lat'], p['lng']], tooltip=p['flight_iata'], icon=folium.DivIcon(html=html)).add_to(m)
 
-        map_res = st_folium(m, width="100%", height=850, key="radar_stable", returned_objects=["last_object_clicked_tooltip", "center", "zoom"])
-
-        # Prevent reset on interaction
+        map_res = st_folium(m, width="100%", height=850, key="stable_radar", returned_objects=["last_object_clicked_tooltip", "center", "zoom"])
         if map_res.get("center"): st.session_state.map_center = [map_res["center"]["lat"], map_res["center"]["lng"]]
         if map_res.get("zoom"): st.session_state.map_zoom = map_res["zoom"]
 
     with col_info:
         clicked = map_res.get("last_object_clicked_tooltip")
         if clicked:
+            trail = get_flight_trail(clicked)
+            if trail: folium.PolyLine(trail, color=SIA_GOLD, weight=2).add_to(m)
             render_fr24_card(clicked)
-        else:
-            st.info("✈️ Click an aircraft on the map.")
+        else: st.info("👈 Click a flight on the map to view deep telemetry.")
 
-# --- 5. NAVIGATION ---
-menu = st.sidebar.radio("KrisTracker Menu", ["Interactive Radar", "Flight Status", "Wayfinding"])
+def show_flight_search():
+    st.title("🔍 Official Flight Search")
+    f_num = st.text_input("Flight Number", "103")
+    date_val = st.date_input("Departure Date", datetime.now())
+    if st.button("Search Status", use_container_width=True):
+        res = fetch_sia_official(f_num, date_val.strftime("%Y-%m-%d"))
+        if res and res.get('legs'):
+            leg = res['legs'][0]
+            st.markdown(f"""<div class="status-card">
+                <div style="display:flex; justify-content:space-between;"><h2>SQ{f_num}</h2><span class="terminal-pill">{res.get('flightStatus')}</span></div>
+                <div style="display:flex; justify-content:space-between; margin:20px 0;">
+                    <div><div class="fr-city">{leg['origin']['airportCode']}</div><span class="terminal-pill">Terminal {leg['origin'].get('terminal','-')}</span></div>
+                    <div style="font-size:30px;">✈</div>
+                    <div style="text-align:right;"><div class="fr-city">{leg['destination']['airportCode']}</div><span class="terminal-pill">Terminal {leg['destination'].get('terminal','-')}</span></div>
+                </div>
+                <div class="fr-grid">
+                    <div><span class="spec-label">Sch. Dep</span><br><b>{fmt_t(leg.get('scheduledDepartureTime'))}</b></div>
+                    <div><span class="spec-label">Act. Dep</span><br><b>{fmt_t(leg.get('actualDepartureTime')) or '---'}</b></div>
+                    <div><span class="spec-label">Sch. Arr</span><br><b>{fmt_t(leg.get('scheduledArrivalTime'))}</b></div>
+                    <div><span class="spec-label">Est/Act Arr</span><br><b>{fmt_t(leg.get('actualArrivalTime') or leg.get('estimatedArrivalTime'))}</b></div>
+                    <div style="grid-column: span 2;"><span class="spec-label">Aircraft Type</span><br><b>{leg.get('aircraftTypeCode')}</b></div>
+                </div></div>""", unsafe_allow_html=True)
+        else: st.error("Flight not found.")
 
-if menu == "Interactive Radar":
-    show_interactive_radar()
-elif menu == "Flight Status":
-    show_flight_status()
+# --- 6. NAVIGATION ---
+menu = st.sidebar.radio("KrisTracker Menu", ["Interactive Radar", "Flight Search", "Wayfinding"])
+if menu == "Interactive Radar": show_interactive_radar()
+elif menu == "Flight Search": show_flight_search()
 elif menu == "Wayfinding":
-    show_wayfinding()
+    st.title("📍 Wayfinding")
+    st.info("Terminal Maps and Gate Navigation features.")
