@@ -3,6 +3,15 @@ import requests, uuid, math, folium, base64, json, os, time
 from streamlit_folium import st_folium
 from datetime import datetime, timezone
 
+# Replace the content="xxx" with the actual code Google gave you
+st.html(
+    '''
+    <head>
+        <meta name="google-site-verification" content="<meta name="google-site-verification" content="kBKaZ6dUdLhlM-wJD0mYwDX1otGkxTRPfno-NInISGQ" />" />
+    </head>
+    '''
+)
+
 # --- 1. CORE STYLING & ASSETS (EXACTLY AS PROVIDED) ---
 st.set_page_config(page_title="KrisTracker Pro", page_icon="✈️", layout="wide")
 SIA_NAVY, SIA_GOLD, FR_YELLOW = "#00266B", "#BD9B60", "#ffc107"
