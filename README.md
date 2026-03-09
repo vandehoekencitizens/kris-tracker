@@ -1,64 +1,55 @@
+# ✈️ KrisTracker Pro: Singapore Airlines Live Operations Dashboard
 
-✈️ KrisTracker Pro: Singapore Airlines Live Operations Dashboard
-KrisTracker Pro is a high-fidelity flight tracking and manifest visualization tool built for Singapore Airlines (SIA) operations. It fuses official SIA API data with AirLabs global telemetry to provide a unified "Flightradar24-style" experience, complete with aircraft imagery, live trails, and Changi Airport wayfinding.
+**KrisTracker Pro** is a high-fidelity flight tracking and manifest visualization tool built specifically for Singapore Airlines (SIA) operations. It fuses official SIA API data with AirLabs global telemetry to provide a unified, "Flightradar24-style" experience, complete with aircraft imagery, live flight paths, and Changi Airport wayfinding.
 
-🚀 Key Features
-📡 Interactive Radar: Live global map showing all active SQ flights. Includes persistent zoom/center and "Live Trails" (flight paths) for selected aircraft.
+---
 
-🔍 Search Manifest: Deep-dive search by flight number and date. Pulls data directly from the Official SIA Gateway including terminal/gate assignments and real-time status.
+## 🚀 Key Features
 
-🖼️ Telemetry Cards: Custom sidebar cards for active flights featuring altitude, groundspeed, and specific aircraft registration imagery (e.g., 9V-SMI, 9V-SKY).
+* **📡 Interactive Radar with Live Trails**: Real-time global map showing all active SQ flights. Dynamically fetches and draws the flight path breadcrumbs for selected aircraft.
+* **🧠 Smart Data Fusion (Search)**: Deep-dive search by flight number and date. The app uses an advanced data fusion engine that prioritizes **AirLabs** for live operational data, seamlessly filling in any missing gaps using the **Official SIA API Gateway**.
+* **🖼️ Telemetry Cards**: Custom sidebar cards for active flights featuring high-resolution aircraft registration imagery (e.g., 9V-SMI, 9V-SKY). Displays live altitude (converted to **feet**) and groundspeed (converted to **knots**).
+* **🗺️ Wayfinding**: Built-in interactive PDF viewer for the Singapore Changi Airport Transit Area navigation.
+* **⚡ Performance Optimized**: Implements Streamlit **Session-State Caching** to retain map zoom and center, completely eliminating map reloading or flickering during user interactions.
 
-🗺️ Wayfinding: Built-in interactive PDF viewer for the Singapore Changi Airport Transit Area navigation.
+---
 
-⚡ Performance Optimized: Implements Session-State Caching to prevent map reloading/flickering during user interaction.
+## 🛠️ Setup & Installation
 
-🛠️ Setup Instructions
-1. Requirements
-Python 3.9+
-
-Streamlit
-
-Folium & Streamlit-Folium
-
-2. Installation
-Clone your repository and install the dependencies:
-
-Bash
+### 1. Requirements
+Ensure you have **Python 3.9+** installed, then install the required dependencies:
+```bash
 pip install streamlit requests folium streamlit-folium
-3. API Keys Configuration
-Create a folder named .streamlit in your root directory and add a secrets.toml file with your credentials:
 
-Ini, TOML
+### 2. API Keys Configuration
+Create a hidden folder named .streamlit in your root directory and add a secrets.toml file with your credentials:
+```bash
 # .streamlit/secrets.toml
 SIA_STATUS_KEY = "YOUR_SIA_GATEWAY_API_KEY"
 AIRLABS_API_KEY = "YOUR_AIRLABS_V9_API_KEY"
-4. Required Assets
-Ensure the following files are in your root folder for the UI to render correctly:
 
-SQ loading screen.mp4 — Custom loading animation.
+### 3. Required Local Assets
+Ensure the following files are placed in your root folder for the UI to render correctly:
 
-f5c530aa-d922-4920-9313-63a11c7f2921.png — Custom aircraft icon.
+SQ loading screen.mp4 — Custom loading animation for the radar.
 
-Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf — The wayfinding guide.
+f5c530aa-d922-4920-9313-63a11c7f2921.png — Custom aircraft map icon.
 
-Aircraft Images: 9V-SMI.jpg, 9V-SKY.jpg, 9V-MBO.jpg, 9V-SCK.avif, 9V-SWR.jpg.
+Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf — The Changi transit guide.
 
-🖥️ Running the App
-Launch the dashboard locally using:
+Aircraft Images: Upload your specific photos mapped to the ICAO codes (e.g., 9V-SMI.jpg, 9V-SKY.jpg, 9V-MBO.jpg, 9V-SCK.avif, 9V-SWR.jpg).
 
-Bash
+### 🖥️ Running the Application
+Launch the dashboard locally using the Streamlit CLI:
+
+```bash
 streamlit run app.py
-📂 Project Structure
-app.py: Core logic, UI components, and API fusion engine.
 
-.streamlit/secrets.toml: Sensitive API credentials (ignored by git).
+### 🔧 Technical Architecture
+Frontend: Streamlit (Wide Layout) with custom CSS injected for SIA Navy (#00266B) and Gold (#BD9B60) branding.
 
-assets/: Folder for aircraft photos and icons.
+Mapping Engine: Folium with streamlit_folium for bi-directional map interaction.
 
-🔧 Technical Details
-API Fusion: The app tries the Official SIA Gateway first for ground-truth schedule data, falling back to AirLabs for live telemetry.
+Telemetry Math: AirLabs outputs speed in km/h and altitude in meters. The script automatically applies multipliers (* 0.539957 for knots, * 3.28084 for feet) for standard aviation reporting.
 
-Map Persistence: Uses st.session_state to store map_center and map_zoom so the map doesn't reset when you click a plane.
-
-Styling: Custom CSS injected via st.markdown to match the SIA Navy (#00266B) and Gold (#BD9B60) branding.
+Caching Strategy: @st.cache_data(ttl=60) is applied to the main fleet API call to respect rate limits and keep the UI lightning-fast, while @st.cache_data(ttl=300) caches specific flight trails.
