@@ -17,8 +17,7 @@
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
-  "postAttachCommand": {
+  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; mkdir -p .streamlit static; echo -e '[server]\nenableStaticServing = true' > .streamlit/config.toml; [ ! -f static/sitemap.xml ] && echo -e '<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap.0.9\">\n <url>\n  <loc>https://your-app-link.streamlit.app/</loc>\n  <priority>1.0</priority>\n </url>\n</urlset>' > static/sitemap.xml; echo '✅ Packages installed, Config set, and Folders created'",
     "server": "streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false"
   },
   "portsAttributes": {
