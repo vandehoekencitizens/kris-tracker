@@ -26,14 +26,14 @@ st.markdown(f"""<style>
 
 # --- 2. CACHED DATA FETCHING (FIXES MAP RELOAD) ---
 
-@st.cache_data(ttl=300) # Data persists for 5 minutes
+@st.cache_data(ttl=300) # Data persists for 5 minutes to prevent flickering
 def get_global_radar_data(api_key):
-    """Fetches radar data with a 5-minute cache to prevent map flickering."""
+    """Fetches radar data with a 5-minute cache."""
     try:
         url = f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={api_key}"
         response = requests.get(url, timeout=10).json()
         return response.get("response", [])
-    except Exception as e:
+    except:
         return []
 
 def get_b64(file_path):
@@ -59,7 +59,7 @@ def calc_eta_str(est_iso):
         return " (Arriving shortly)"
     except: return ""
 
-# --- 3. SEARCH ENGINE ---
+# --- 3. DATA FUSION ENGINE ---
 
 def fetch_search_data(f_num, date_str):
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
@@ -109,7 +109,6 @@ def fetch_search_data(f_num, date_str):
 # --- 4. UI COMPONENTS ---
 
 def render_search_manifest(data):
-    """The detailed Flight Search Card with Grids and Terminal info."""
     leg = data["leg"]
     arr_terminal = "Terminal 2/3" if (leg['arr_iata'] == "SIN" and leg['arr_term'] == "TBA") else leg['arr_term']
     
@@ -145,11 +144,16 @@ def render_fr24_card(flight_iata, telemetry=None):
         img = get_ac_image(leg['ac_type'])
         if img: st.image(img, use_container_width=True)
         st.markdown(f"""<div class="fr-route-box"><div style="text-align:left;"><div class="fr-city">{leg['dep_iata']}</div><div class="spec-label">DEP</div></div><div style="font-size:30px; color:{FR_YELLOW}; transform:rotate(90deg);">✈</div><div style="text-align:right;"><div class="fr-city">{leg['arr_iata']}</div><div class="spec-label">ARR</div></div></div>""", unsafe_allow_html=True)
+        
         eta = calc_eta_str(leg['times']['est_arr']) if data['status'] == "EN-ROUTE" else ""
-        st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or leg['times']['est_arr'])}{eta}</b></div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST/ACT ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or leg['times']['est_arr'])}{eta}</b></div></div>""", unsafe_allow_html=True)
+        
         if telemetry:
-            alt_ft = int(telemetry.get('alt', 0) * 3.28084)
-            gs_kts = int(telemetry.get('gs', 0) * 0.539957)
+            # FIX: Robust groundspeed and altitude extraction
+            raw_gs = telemetry.get('gs') or telemetry.get('speed') or 0
+            raw_alt = telemetry.get('alt') or 0
+            alt_ft = int(float(raw_alt) * 3.28084)
+            gs_kts = int(float(raw_gs) * 0.539957)
             st.markdown(f"""<div class="fr-telemetry"><div><span class="spec-label">ALTITUDE</span><br><b>{alt_ft:,} ft</b></div><div><span class="spec-label">GROUNDSPEED</span><br><b>{gs_kts} kts</b></div></div>""", unsafe_allow_html=True)
 
 # --- 5. INTERACTIVE RADAR ---
@@ -161,25 +165,24 @@ def show_interactive_radar():
     col_info, col_map = st.columns([1.5, 2])
     
     # FETCH DATA (CACHE-ENABLED)
-    # The loading video only shows once every 5 minutes when the cache expires
+    # The Syncing video only appears when the 5-min cache expires
     with st.spinner("Syncing Global Radar..."):
         planes = get_global_radar_data(st.secrets['AIRLABS_API_KEY'])
 
-    # Google Hybrid Map Persistence
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, 
                    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
                    attr='Google', name='Google Hybrid')
     
     plane_icon_b64 = get_b64("f5c530aa-d922-4920-9313-63a11c7f2921.png")
     for p in planes:
-        if p.get('lat') and p.get('lng'):
+        lat, lon = p.get('lat'), p.get('lng')
+        if lat and lon:
             html = f'<div style="transform: rotate({p.get("dir",0)}deg);"><img src="data:image/png;base64,{plane_icon_b64}" width="28" height="28"></div>'
-            folium.Marker([p['lat'], p['lng']], tooltip=p.get('flight_iata','SQ'), 
+            folium.Marker([lat, lon], tooltip=p.get('flight_iata','SQ'), 
                           icon=folium.DivIcon(html=html, icon_size=(28,28))).add_to(m)
 
     with col_map:
         res = st_folium(m, width="100%", height=800, key="radar_main")
-        # Save center/zoom to session state so interactions don't reset the view
         if res.get("center"): st.session_state.map_center = [res["center"]["lat"], res["center"]["lng"]]
         if res.get("zoom"): st.session_state.map_zoom = res["zoom"]
 
@@ -189,21 +192,19 @@ def show_interactive_radar():
             p_data = next((x for x in planes if x.get('flight_iata') == clicked), {})
             render_fr24_card(clicked, telemetry=p_data)
         else:
-            st.info("👈 Select an aircraft on the map to view full manifest.")
-            # Sidebar manifest list
+            st.info("👈 Select an aircraft on the map to view detailed manifest.")
             with st.container(height=600):
                 for p in planes:
-                    alt_ft = int(p.get('alt', 0) * 3.28084)
-                    gs_kts = int(p.get('gs', 0) * 0.539957)
-                    st.markdown(f"**{p.get('flight_iata','SQ')}** | {alt_ft:,} ft | {gs_kts} kts")
+                    raw_gs = p.get('gs') or p.get('speed') or 0
+                    gs_kts = int(float(raw_gs) * 0.539957)
+                    st.markdown(f"**{p.get('flight_iata','SQ')}** | Groundspeed: {gs_kts} kts")
                     st.divider()
 
 # --- 6. NAVIGATION ---
 
 menu = st.sidebar.radio("MODE", ["📡 Radar", "🔍 Search", "🗺️ Wayfinding"])
 
-if menu == "📡 Radar":
-    show_interactive_radar()
+if menu == "📡 Radar": show_interactive_radar()
 elif menu == "🔍 Search":
     c1, c2 = st.columns(2)
     f_num = c1.text_input("SQ Number", "11")
