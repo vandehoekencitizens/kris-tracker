@@ -54,11 +54,11 @@ def get_ac_image(ac_code):
     return mapping.get(code)
 
 def fmt_t(dt_str): 
-    """Formats ISO time to HH:MM."""
+    """Formats ISO time to HH:MM for display."""
     return dt_str[-5:] if dt_str and len(dt_str) >= 5 else "---"
 
 def calc_eta_str(est_iso):
-    """Calculates live countdown based on estimated arrival."""
+    """Calculates live countdown based on estimated arrival ISO string."""
     try:
         if not est_iso: return ""
         est = datetime.fromisoformat(est_iso.replace("Z", "+00:00"))
@@ -73,7 +73,7 @@ def calc_eta_str(est_iso):
 # --- 3. DATA FUSION ENGINE ---
 
 def fetch_search_data(f_num, date_str):
-    """Combines Official SIA API with AirLabs feed for the Search Mode."""
+    """Combines Official SIA API with AirLabs feed for Search Mode."""
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
     iata = f"SQ{f_num}".upper()
     
@@ -96,7 +96,7 @@ def fetch_search_data(f_num, date_str):
 
     al_data = {}
     try:
-        # Search AirLabs for specific flight details
+        # Fetching specific flight details from AirLabs
         url = f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={iata}"
         al = requests.get(url, timeout=5).json().get("response")
         if al and date_str in al.get("dep_time", ""): al_data = al
@@ -107,6 +107,7 @@ def fetch_search_data(f_num, date_str):
         unified["status"] = al_data.get("status", sq_status).upper()
         unified["leg"] = {
             "fn": iata, 
+            # Fixed: Using aircraft_icao as per AirLabs documentation
             "ac_type": al_data.get("aircraft_icao") or sq_leg.get("aircraftTypeCode", "N/A"),
             "dep_iata": al_data.get("dep_iata") or sq_leg.get("origin", {}).get("airportCode", "---"),
             "arr_iata": al_data.get("arr_iata") or sq_leg.get("destination", {}).get("airportCode", "---"),
@@ -119,6 +120,7 @@ def fetch_search_data(f_num, date_str):
                 "act_dep": al_data.get("dep_actual") or sq_leg.get("actualDepartureTime"),
                 "sch_arr": al_data.get("arr_time") or sq_leg.get("scheduledArrivalTime"),
                 "act_arr": al_data.get("arr_actual") or sq_leg.get("actualArrivalTime"),
+                # Fixed: Estimated arrival field mapping
                 "est_arr": al_data.get("arr_estimated") or sq_leg.get("estimatedArrivalTime")
             }
         }
@@ -155,14 +157,15 @@ def render_search_manifest(data):
     d3.markdown(f"<div class='spec-label'>Estimated Arr</div><div class='time-box'>{leg['times']['est_arr'] or '---'}</div>", unsafe_allow_html=True)
 
 def render_fr24_card(flight_iata, telemetry=None):
-    """The Sidebar Card for the Interactive Radar. Terminology fixed to 'Speed'."""
+    """The Sidebar Card for the Interactive Radar. Fixed terminology to 'Speed'."""
     f_num = flight_iata.replace("SQ", "").strip()
     data = fetch_search_data(f_num, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     
     if data["leg"]:
         leg = data["leg"]
-        # Documentation: Extracting aircraft_icao for dynamic type loading
-        ac_type = telemetry.get('aircraft_icao') or leg['ac_type']
+        # Loading aircraft_icao dynamically as per documentation
+        ac_type = telemetry.get('aircraft_icao') if telemetry else leg['ac_type']
+        
         st.markdown(f"""<div class="fr-header"><span class="fr-callsign">{flight_iata}</span><span class="fr-iata">{leg['fn']}</span><span class="fr-type">{ac_type}</span></div><div style="color:#ccc; font-size:14px; margin-bottom:10px;">Singapore Airlines</div>""", unsafe_allow_html=True)
         
         img = get_ac_image(ac_type)
@@ -170,14 +173,18 @@ def render_fr24_card(flight_iata, telemetry=None):
         
         st.markdown(f"""<div class="fr-route-box"><div style="text-align:left;"><div class="fr-city">{leg['dep_iata']}</div><div class="spec-label">DEP</div></div><div style="font-size:30px; color:{FR_YELLOW}; transform:rotate(90deg);">✈</div><div style="text-align:right;"><div class="fr-city">{leg['arr_iata']}</div><div class="spec-label">ARR</div></div></div>""", unsafe_allow_html=True)
         
-        # Documentation: Priority loading of Estimated Arrival
-        eta = calc_eta_str(leg['times']['est_arr']) if data['status'] == "EN-ROUTE" else ""
-        st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST/ACT ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or leg['times']['est_arr'])}{eta}</b></div></div>""", unsafe_allow_html=True)
+        # Fixed: Estimated arrival logic
+        est_arr_raw = leg['times']['est_arr']
+        eta = calc_eta_str(est_arr_raw) if data['status'] == "EN-ROUTE" else ""
+        
+        st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST/ACT ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or est_arr_raw)}{eta}</b></div></div>""", unsafe_allow_html=True)
         
         if telemetry:
-            # Fixed terminology: Speed instead of Groundspeed
+            # Fixed terminology: Renamed Groundspeed to Speed
+            # Conversions: alt (meters -> ft), speed (km -> kts) based on documentation notes
             alt_ft = int(float(telemetry.get('alt', 0)) * 3.28084)
             speed_kts = int(float(telemetry.get('speed', 0)) * 0.539957)
+            
             st.markdown(f"""<div class="fr-telemetry"><div><span class="spec-label">ALTITUDE</span><br><b>{alt_ft:,} ft</b></div><div><span class="spec-label">SPEED</span><br><b>{speed_kts} kts</b></div></div>""", unsafe_allow_html=True)
 
 # --- 5. INTERACTIVE RADAR ---
@@ -191,7 +198,7 @@ def show_interactive_radar():
 
     col_info, col_map = st.columns([1.5, 2.5])
     
-    # 5-minute session state timer logic
+    # 5-minute session state timer check
     time_elapsed = time.time() - st.session_state.last_radar_fetch
     refresh_needed = time_elapsed > 300
     
@@ -210,12 +217,14 @@ def show_interactive_radar():
             vid = get_b64("SQ loading screen.mp4")
             st.markdown(f"""<div style="text-align:center; padding:80px;"><video width="300" autoplay loop muted><source src="data:video/mp4;base64,{vid}" type="video/mp4"></video><p style="color:{SIA_NAVY}; font-weight:bold; margin-top:20px;">Syncing AirLabs Global Feed...</p></div>""", unsafe_allow_html=True)
             try:
+                # Filtering by airline_iata=SQ to reduce overhead
                 url = f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}"
                 st.session_state.radar_data = requests.get(url, timeout=10).json().get("response", [])
                 st.session_state.last_radar_fetch = time.time()
             except: pass
         st.rerun()
 
+    # Map Implementation
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, 
                    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
                    attr='Google', name='Google Hybrid', zoom_control=False)
@@ -224,11 +233,17 @@ def show_interactive_radar():
     for p in st.session_state.radar_data:
         lat, lon = p.get('lat'), p.get('lng')
         if lat and lon:
+            # Using 'dir' for aircraft heading from documentation
             html = f'<div style="transform: rotate({p.get("dir",0)}deg);"><img src="data:image/png;base64,{icon_b64}" width="28" height="28"></div>'
-            folium.Marker([lat, lon], tooltip=p.get('flight_iata','SQ'), icon=folium.DivIcon(html=html, icon_size=(28,28))).add_to(m)
+            folium.Marker(
+                [lat, lon], 
+                tooltip=p.get('flight_iata','SQ'), 
+                icon=folium.DivIcon(html=html, icon_size=(28,28))
+            ).add_to(m)
 
     with col_map:
         res = st_folium(m, width="100%", height=800, key="radar_main", use_container_width=True)
+        # Persistent center/zoom
         if res.get("center"): st.session_state.map_center = [res["center"]["lat"], res["center"]["lng"]]
         if res.get("zoom"): st.session_state.map_zoom = res["zoom"]
 
@@ -242,6 +257,7 @@ def show_interactive_radar():
             st.markdown("<div class='section-header'>Active Air Manifest</div>", unsafe_allow_html=True)
             with st.container(height=650):
                 for p in st.session_state.radar_data:
+                    # Fix: Loading aircraft type & speed in manifest list
                     ac_type = p.get('aircraft_icao', 'N/A')
                     speed_kts = int(float(p.get('speed', 0)) * 0.539957)
                     st.markdown(f"**{p.get('flight_iata','SQ')}** ({ac_type})")
@@ -256,19 +272,23 @@ if menu == "📡 Radar":
     show_interactive_radar()
 
 elif menu == "🔍 Search":
-    st.title("🔍 Flight Search")
+    st.title("🔍 Advanced Flight Search")
     c1, c2 = st.columns(2)
-    f_num = c1.text_input("SQ Number", "11")
+    f_num = c1.text_input("SQ Flight Number", "11", help="Enter numeric only")
     f_date = c2.date_input("Departure Date")
-    if st.button("EXECUTE SEARCH"):
-        data = fetch_search_data(f_num, str(f_date))
-        if data["leg"]: render_search_manifest(data)
-        else: st.error("No flight found.")
+    if st.button("EXECUTE DATA SEARCH"):
+        with st.spinner("Accessing Gateways..."):
+            data = fetch_search_data(f_num, str(f_date))
+            if data["leg"]: render_search_manifest(data)
+            else: st.error("No flight data found for this entry.")
 
 elif menu == "🗺️ Wayfinding":
     st.title("🗺️ Changi Wayfinding")
-    pdf = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
-    if pdf: st.markdown(f'<iframe src="data:application/pdf;base64,{pdf}" width="100%" height="950" style="border:none;"></iframe>', unsafe_allow_html=True)
+    pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
+    if pdf_b64:
+        st.markdown(f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="950" style="border:none; border-radius:10px;"></iframe>', unsafe_allow_html=True)
+    else:
+        st.warning("Wayfinding document not found.")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"**KrisTracker Pro** v2.0.4  \n*Telemetry: AirLabs Live Feed*")
