@@ -62,81 +62,59 @@ def calc_eta_str(est_iso):
         return " (Arriving shortly)"
     except: return ""
 
-# --- 3. CACHED DATA FETCHING ---
-
-@st.cache_data(ttl=60)
-def get_cached_airlabs_data(api_key):
-    """Prevents the 'Reloading' glitch by keeping plane data in memory."""
-    try:
-        res = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={api_key}").json()
-        return res.get("response", [])
-    except:
-        return []
-
-@st.cache_data(ttl=300)
-def get_cached_flight_track(api_key, flight_iata):
-    """Caches the flight path (live trail) to keep map interaction smooth."""
-    try:
-        res = requests.get(f"https://airlabs.co/api/v9/track?api_key={api_key}&flight_iata={flight_iata}").json()
-        return res.get("response", [])
-    except:
-        return []
+# --- 3. DATA FUSION ENGINE (WITH DATE FIX) ---
 
 def fetch_search_data(f_num, date_str):
-    """Fuses Data: Prioritizes AirLabs, uses SIA API as fallback filler."""
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
     iata = f"SQ{f_num}".upper()
     
-    sq_leg = {}
-    sq_status = "Unknown"
-    
-    # 1. Fetch SQ API (Fallback Filler)
+    # Priority 1: SQ API (Official Gateway - Accurate for all historical/future dates)
+    sq_leg, sq_status = {}, "Unknown"
     try:
         url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
         headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4())}
         sq_res = requests.post(url, json={"airlineCode": "SQ", "flightNumber": f_num, "scheduledDepartureDate": date_str}, headers=headers, timeout=5).json()
-        sq_flights = sq_res.get("data", {}).get("response", {}).get("flights", [None])[0]
+        sq_data = sq_res.get("data", {}).get("response", {}).get("flights", [None])[0]
         
-        if sq_flights and sq_flights.get("legs"):
-            valid_legs = [l for l in sq_flights["legs"] if date_str in l.get("scheduledDepartureTime", "")]
+        if sq_data and sq_data.get("legs"):
+            # Filter specifically for the requested date
+            valid_legs = [l for l in sq_data["legs"] if date_str in l.get("scheduledDepartureTime", "")]
             if valid_legs:
-                sq_leg = valid_legs[-1]
+                sq_leg = valid_legs[-1] # Grab the final leg to avoid layover duplicates
                 sq_status = sq_leg.get("flightStatus", "Unknown").upper()
     except: pass
 
-    # 2. Fetch AirLabs (Primary Source)
+    # Fallback/Override: AirLabs (Live operational truth)
     al_data = {}
     try:
         url = f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={iata}"
-        al_res = requests.get(url, timeout=5).json().get("response")
-        # Validate date matches AirLabs OR no date to check against
-        if al_res and (date_str in al_res.get("dep_time", "") or not sq_leg):
-            al_data = al_res
+        al = requests.get(url, timeout=5).json().get("response")
+        # THE DATE FIX: Ensure AirLabs data is actually for the requested date
+        if al and date_str in al.get("dep_time", ""):
+            al_data = al
     except: pass
 
-    # 3. Merge Logic (AirLabs overrides SIA Gateway)
+    # Fusion Logic
     if al_data or sq_leg:
-        unified["source"] = "AIRLABS & SIA FUSION" if (al_data and sq_leg) else ("AIRLABS" if al_data else "OFFICIAL SIA GATEWAY")
+        unified["source"] = "AIRLABS OPERATIONS" if al_data else "OFFICIAL SIA GATEWAY"
         unified["status"] = al_data.get("status", sq_status).upper()
-        
         unified["leg"] = {
             "fn": iata, 
             "ac_type": al_data.get("aircraft_icao") or sq_leg.get("aircraftTypeCode", "N/A"),
-            "dep_iata": al_data.get("dep_iata") or sq_leg.get("origin", {}).get("airportCode", "---"),
+            "dep_iata": al_data.get("dep_iata") or sq_leg.get("origin", {}).get("airportCode", "---"), 
             "arr_iata": al_data.get("arr_iata") or sq_leg.get("destination", {}).get("airportCode", "---"),
-            "dep_term": al_data.get("dep_terminal") or sq_leg.get("origin", {}).get("airportTerminal", "TBA"),
+            "dep_term": al_data.get("dep_terminal") or sq_leg.get("origin", {}).get("airportTerminal", "TBA"), 
             "arr_term": al_data.get("arr_terminal") or sq_leg.get("destination", {}).get("airportTerminal", "TBA"),
-            "dep_gate": al_data.get("dep_gate") or sq_leg.get("origin", {}).get("gate", "TBA"),
+            "dep_gate": al_data.get("dep_gate") or sq_leg.get("origin", {}).get("gate", "TBA"), 
             "arr_gate": al_data.get("arr_gate") or sq_leg.get("destination", {}).get("gate", "TBA"),
             "times": {
-                "sch_dep": al_data.get("dep_time") or sq_leg.get("scheduledDepartureTime"),
+                "sch_dep": al_data.get("dep_time") or sq_leg.get("scheduledDepartureTime"), 
                 "act_dep": al_data.get("dep_actual") or sq_leg.get("actualDepartureTime"),
-                "sch_arr": al_data.get("arr_time") or sq_leg.get("scheduledArrivalTime"),
-                "act_arr": al_data.get("arr_actual") or sq_leg.get("actualArrivalTime"),
+                "sch_arr": al_data.get("arr_time") or sq_leg.get("scheduledArrivalTime"), 
+                "act_arr": al_data.get("arr_actual") or sq_leg.get("actualArrivalTime"), 
                 "est_arr": al_data.get("arr_estimated") or sq_leg.get("estimatedArrivalTime")
             }
         }
-        
     return unified
 
 # --- 4. UI COMPONENTS ---
@@ -206,16 +184,16 @@ def render_fr24_card(flight_iata, telemetry=None):
         </div>""", unsafe_allow_html=True)
         
         if telemetry:
-            # Fixed altitude and speed conversions from AirLabs standard units
+            # Applied correct math conversions for altitude and speed
             alt_ft = int(telemetry.get('alt', 0) * 3.28084)
-            speed_kts = int(telemetry.get('speed', 0) * 0.539957)
+            gs_kts = int(telemetry.get('gs', 0) * 0.539957)
             st.markdown(f"""
             <div class="fr-telemetry">
                 <div><span class="spec-label">ALTITUDE</span><br><b>{alt_ft:,} ft</b></div>
-                <div><span class="spec-label">GROUNDSPEED</span><br><b>{speed_kts:,} kts</b></div>
+                <div><span class="spec-label">GROUNDSPEED</span><br><b>{gs_kts} kts</b></div>
             </div>""", unsafe_allow_html=True)
 
-# --- 5. INTERACTIVE RADAR (AIRLABS ONLY + IMPROVEMENTS) ---
+# --- 5. INTERACTIVE RADAR (HYBRID SATELLITE IMPLEMENTED) ---
 
 def show_interactive_radar():
     # PERSISTENT STATE - Retains center/zoom during clicks
@@ -232,11 +210,19 @@ def show_interactive_radar():
             <video width="280" autoplay loop muted><source src="data:video/mp4;base64,{vid_b64}" type="video/mp4"></video>
             <p style="color:{SIA_NAVY}; font-weight:bold; margin-top:15px;">Syncing with AirLabs Global Feed...</p>
         </div>""", unsafe_allow_html=True)
-        # Fetching planes from CACHE to avoid reloading glitches
-        planes = get_cached_airlabs_data(st.secrets['AIRLABS_API_KEY'])
+        try: planes = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
+        except: planes = []
     load_placeholder.empty()
 
-    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="CartoDB dark_matter")
+    # THE MAP FIX: Google Hybrid Satellite map with borders and text
+    m = folium.Map(
+        location=st.session_state.map_center, 
+        zoom_start=st.session_state.map_zoom, 
+        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
+        attr='Google',
+        name='Google Hybrid'
+    )
+    
     plane_icon_b64 = get_b64("f5c530aa-d922-4920-9313-63a11c7f2921.png")
     
     for p in planes:
@@ -256,10 +242,12 @@ def show_interactive_radar():
     clicked = map_data.get("last_object_clicked_tooltip")
     with col_info:
         if clicked:
-            # LIVE TRAIL - Fetches from CACHE and draws path for selected aircraft
-            track = get_cached_flight_track(st.secrets['AIRLABS_API_KEY'], clicked)
-            if track:
-                folium.PolyLine([[t['lat'], t['lng']] for t in track if 'lat' in t], color=SIA_GOLD, weight=2).add_to(m)
+            # LIVE TRAIL - Fetches and draws path for selected aircraft
+            try:
+                track = requests.get(f"https://airlabs.co/api/v9/track?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={clicked}").json().get("response", [])
+                if track:
+                    folium.PolyLine([[t['lat'], t['lng']] for t in track if 'lat' in t], color=SIA_GOLD, weight=2).add_to(m)
+            except: pass
 
             p_data = next((x for x in planes if x.get('flight_iata') == clicked), {})
             render_fr24_card(clicked, telemetry=p_data)
@@ -267,10 +255,10 @@ def show_interactive_radar():
             st.info("👈 Select an aircraft on the map to view full telemetry.")
             with st.container(height=600):
                 for p in planes:
-                    # Fixed altitude and speed conversions from AirLabs standard units
+                    # Applied correct math conversions here too
                     alt_ft = int(p.get('alt', 0) * 3.28084)
-                    speed_kts = int(p.get('speed', 0) * 0.539957)
-                    st.markdown(f"**{p.get('flight_iata','SQ')}** | {alt_ft:,} ft | {speed_kts:,} kts")
+                    gs_kts = int(p.get('gs', 0) * 0.539957)
+                    st.markdown(f"**{p.get('flight_iata','SQ')}** | {alt_ft:,} ft | {gs_kts} kts")
                     st.divider()
 
 # --- 6. NAVIGATION (EXACTLY AS PROVIDED) ---
@@ -289,6 +277,11 @@ elif menu == "🔍 Search":
         if data["leg"]: render_search_manifest(data)
         else: st.error("No flight found.")
 
+elif menu == "🗺️ Wayfinding":
+    pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
+    if pdf_b64:
+        st.markdown(f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="900"></iframe>', unsafe_allow_html=True)
+    else: st.error("PDF file not found.")
 elif menu == "🗺️ Wayfinding":
     pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
     if pdf_b64:
