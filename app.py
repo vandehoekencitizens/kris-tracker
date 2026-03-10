@@ -8,7 +8,7 @@ st.set_page_config(page_title="KrisTracker Pro", page_icon="✈️", layout="wid
 SIA_NAVY, SIA_GOLD, FR_YELLOW = "#00266B", "#BD9B60", "#ffc107"
 
 st.markdown(f"""<style>
-    /* Shrink Sidebar and Mode Selection Area to make it smaller as per your drawing */
+    /* Sidebar Width for Mode Selection */
     [data-testid="stSidebar"] {{ min-width: 200px !important; max-width: 200px !important; }}
     
     /* Typography & Spacing for Search Manifest */
@@ -18,7 +18,7 @@ st.markdown(f"""<style>
     .status-pill {{ background: {SIA_NAVY}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; text-transform: uppercase; }}
     .section-header {{ border-bottom: 2px solid #eee; padding-bottom: 5px; margin-bottom: 15px; color: #444; font-weight: 800; font-size: 14px; text-transform: uppercase; }}
     
-    /* FR24 Sidebar/Info Panel Styling (Detailed View) */
+    /* Info Sidebar / FR24 Card Styling */
     .fr-header {{ display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid #444; }}
     .fr-callsign {{ color: {FR_YELLOW}; font-size: 26px; font-weight: 900; }}
     .fr-iata {{ background: #ddd; color: #333; padding: 2px 6px; border-radius: 4px; font-size: 14px; font-weight: bold; }}
@@ -68,7 +68,7 @@ def fetch_search_data(f_num, date_str):
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
     iata = f"SQ{f_num}".upper()
     
-    # Priority 1: SQ API (Official Gateway - Accurate for all historical/future dates)
+    # Priority 1: SQ API (Official Gateway)
     sq_leg, sq_status = {}, "Unknown"
     try:
         url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
@@ -77,24 +77,21 @@ def fetch_search_data(f_num, date_str):
         sq_data = sq_res.get("data", {}).get("response", {}).get("flights", [None])[0]
         
         if sq_data and sq_data.get("legs"):
-            # Filter specifically for the requested date
             valid_legs = [l for l in sq_data["legs"] if date_str in l.get("scheduledDepartureTime", "")]
             if valid_legs:
-                sq_leg = valid_legs[-1] # Grab the final leg to avoid layover duplicates
+                sq_leg = valid_legs[-1]
                 sq_status = sq_leg.get("flightStatus", "Unknown").upper()
     except: pass
 
-    # Fallback/Override: AirLabs (Live operational truth)
+    # Fallback: AirLabs
     al_data = {}
     try:
         url = f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={iata}"
         al = requests.get(url, timeout=5).json().get("response")
-        # THE DATE FIX: Ensure AirLabs data is actually for the requested date
         if al and date_str in al.get("dep_time", ""):
             al_data = al
     except: pass
 
-    # Fusion Logic
     if al_data or sq_leg:
         unified["source"] = "AIRLABS OPERATIONS" if al_data else "OFFICIAL SIA GATEWAY"
         unified["status"] = al_data.get("status", sq_status).upper()
@@ -148,7 +145,7 @@ def render_search_manifest(data):
     d3.markdown(f"<div class='spec-label'>Estimated Arr</div><div class='time-box'>{leg['times']['est_arr'] or '---'}</div>", unsafe_allow_html=True)
 
 def render_fr24_card(flight_iata, telemetry=None):
-    """The detailed Sidebar Card for the Interactive Radar."""
+    """The Info Sidebar Card for the Interactive Radar."""
     f_num = flight_iata.replace("SQ", "").strip()
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     data = fetch_search_data(f_num, today_str)
@@ -184,37 +181,46 @@ def render_fr24_card(flight_iata, telemetry=None):
         </div>""", unsafe_allow_html=True)
         
         if telemetry:
-            # Applied correct math conversions for altitude and speed
-            alt_ft = int(telemetry.get('alt', 0) * 3.28084)
-            gs_kts = int(telemetry.get('gs', 0) * 0.539957)
+            # FIX: Reverted to raw API values for Alt/Kts to ensure calculation isn't "broken"
             st.markdown(f"""
             <div class="fr-telemetry">
-                <div><span class="spec-label">ALTITUDE</span><br><b>{alt_ft:,} ft</b></div>
-                <div><span class="spec-label">GROUNDSPEED</span><br><b>{gs_kts} kts</b></div>
+                <div><span class="spec-label">ALTITUDE</span><br><b>{telemetry.get('alt', 0):,} ft</b></div>
+                <div><span class="spec-label">GROUNDSPEED</span><br><b>{telemetry.get('gs', 0)} kts</b></div>
             </div>""", unsafe_allow_html=True)
 
-# --- 5. INTERACTIVE RADAR (HYBRID SATELLITE + PERSISTENCE) ---
+# --- 5. INTERACTIVE RADAR (5-MIN RELOAD + INFO SIDEBAR) ---
 
 def show_interactive_radar():
-    # ANTI-RELOAD MAP FEATURE: Retains center/zoom during clicks
+    # PERSISTENT STATE
     if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
     if "map_zoom" not in st.session_state: st.session_state.map_zoom = 4
+    if "last_radar_fetch" not in st.session_state: st.session_state.last_radar_fetch = 0
+    if "cached_planes" not in st.session_state: st.session_state.cached_planes = []
 
+    # Two columns: Column 1 is the INFO SIDEBAR, Column 2 is the MAP
     col_info, col_map = st.columns([1.5, 2])
     
-    # Custom MP4 Spinner
-    load_placeholder = st.empty()
-    with load_placeholder.container():
-        vid_b64 = get_b64("SQ loading screen.mp4")
-        st.markdown(f"""<div style="text-align:center; padding:40px;">
-            <video width="280" autoplay loop muted><source src="data:video/mp4;base64,{vid_b64}" type="video/mp4"></video>
-            <p style="color:{SIA_NAVY}; font-weight:bold; margin-top:15px;">Syncing with AirLabs Global Feed...</p>
-        </div>""", unsafe_allow_html=True)
-        try: planes = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
-        except: planes = []
-    load_placeholder.empty()
+    current_time = time.time()
+    # 5-MINUTE RELOAD LOGIC
+    if (current_time - st.session_state.last_radar_fetch) > 300:
+        load_placeholder = st.empty()
+        with load_placeholder.container():
+            vid_b64 = get_b64("SQ loading screen.mp4")
+            st.markdown(f"""<div style="text-align:center; padding:40px;">
+                <video width="280" autoplay loop muted><source src="data:video/mp4;base64,{vid_b64}" type="video/mp4"></video>
+                <p style="color:{SIA_NAVY}; font-weight:bold; margin-top:15px;">Updating Global Feed...</p>
+            </div>""", unsafe_allow_html=True)
+            try: 
+                planes = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
+                st.session_state.cached_planes = planes
+                st.session_state.last_radar_fetch = current_time
+            except: 
+                planes = st.session_state.cached_planes
+        load_placeholder.empty()
+    else:
+        planes = st.session_state.cached_planes
 
-    # THE MAP FIX: Google Hybrid Satellite map with borders and text
+    # HYBRID SATELLITE MAP
     m = folium.Map(
         location=st.session_state.map_center, 
         zoom_start=st.session_state.map_zoom, 
@@ -235,18 +241,18 @@ def show_interactive_radar():
 
     with col_map:
         map_data = st_folium(m, width="100%", height=800, key="radar_main")
-        # Save center/zoom to session state to prevent "reverting"
         if map_data.get("center"): st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
         if map_data.get("zoom"): st.session_state.map_zoom = map_data["zoom"]
 
     clicked = map_data.get("last_object_clicked_tooltip")
+    
+    # RENDER THE INFO SIDEBAR
     with col_info:
         if clicked:
-            # LIVE TRAIL - Fetches and draws path for selected aircraft
+            # Draw trail if clicked
             try:
                 track = requests.get(f"https://airlabs.co/api/v9/track?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={clicked}").json().get("response", [])
-                if track:
-                    folium.PolyLine([[t['lat'], t['lng']] for t in track if 'lat' in t], color=SIA_GOLD, weight=2).add_to(m)
+                if track: folium.PolyLine([[t['lat'], t['lng']] for t in track if 'lat' in t], color=SIA_GOLD, weight=2).add_to(m)
             except: pass
 
             p_data = next((x for x in planes if x.get('flight_iata') == clicked), {})
@@ -255,13 +261,11 @@ def show_interactive_radar():
             st.info("👈 Select an aircraft on the map to view full telemetry.")
             with st.container(height=600):
                 for p in planes:
-                    # Applied correct math conversions for telemetry list
-                    alt_ft = int(p.get('alt', 0) * 3.28084)
-                    gs_kts = int(p.get('gs', 0) * 0.539957)
-                    st.markdown(f"**{p.get('flight_iata','SQ')}** | {alt_ft:,} ft | {gs_kts} kts")
+                    # FIX: Reverted to raw API values for speed display here as well
+                    st.markdown(f"**{p.get('flight_iata','SQ')}** | {p.get('alt', 0):,} ft | {p.get('gs', 0)} kts")
                     st.divider()
 
-# --- 6. NAVIGATION (EXACTLY AS PROVIDED) ---
+# --- 6. NAVIGATION ---
 
 menu = st.sidebar.radio("MODE", ["📡 Radar", "🔍 Search", "🗺️ Wayfinding"])
 
