@@ -4,22 +4,16 @@ from streamlit_folium import st_folium
 from datetime import datetime, timezone
 
 # --- 1. CORE STYLING & ASSETS ---
-# Configures the wide layout and custom SIA color palette
 st.set_page_config(page_title="KrisTracker Pro", page_icon="✈️", layout="wide")
 SIA_NAVY, SIA_GOLD, FR_YELLOW = "#00266B", "#BD9B60", "#ffc107"
 
 st.markdown(f"""<style>
-    /* Sidebar constraint for cleaner UI */
     [data-testid="stSidebar"] {{ min-width: 200px !important; max-width: 200px !important; }}
-    
-    /* Search Manifest Typography */
     .spec-label {{ color: #666; font-size: 11px; text-transform: uppercase; font-weight: bold; letter-spacing: 0.8px; margin-bottom: 2px; }}
     .spec-value {{ color: {SIA_NAVY}; font-size: 17px; font-weight: 700; margin-bottom: 15px; font-family: 'Segoe UI', sans-serif; }}
     .time-box {{ background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #d1d5db; border-left: 5px solid {SIA_GOLD}; }}
     .status-pill {{ background: {SIA_NAVY}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; text-transform: uppercase; }}
     .section-header {{ border-bottom: 2px solid #eee; padding-bottom: 5px; margin-bottom: 15px; color: #444; font-weight: 800; font-size: 14px; text-transform: uppercase; }}
-    
-    /* Radar Sidebar (FlightRadar Style) Card Styling */
     .fr-header {{ display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid #444; }}
     .fr-callsign {{ color: {FR_YELLOW}; font-size: 26px; font-weight: 900; }}
     .fr-iata {{ background: #ddd; color: #333; padding: 2px 6px; border-radius: 4px; font-size: 14px; font-weight: bold; }}
@@ -30,28 +24,31 @@ st.markdown(f"""<style>
     .fr-telemetry {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; }}
 </style>""", unsafe_allow_html=True)
 
-# --- 2. HELPER FUNCTIONS ---
+# --- 2. CACHED DATA FETCHING (FIXES MAP RELOAD) ---
+
+@st.cache_data(ttl=300) # Data persists for 5 minutes
+def get_global_radar_data(api_key):
+    """Fetches radar data with a 5-minute cache to prevent map flickering."""
+    try:
+        url = f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={api_key}"
+        response = requests.get(url, timeout=10).json()
+        return response.get("response", [])
+    except Exception as e:
+        return []
 
 def get_b64(file_path):
-    """Retrieves local files for PDF, Radar Icons, and Loading Video."""
     try:
         with open(file_path, "rb") as f:
             return base64.b64encode(f.read()).decode('utf-8')
     except: return ""
 
 def get_ac_image(ac_code):
-    """Maps ICAO codes to local aircraft photography."""
-    code = str(ac_code).upper().strip()
-    mapping = {
-        "A359": "9V-SMI.jpg", "A388": "9V-SKY.jpg", "B38M": "9V-MBO.jpg",
-        "78X": "9V-SCK.avif", "B78X": "9V-SCK.avif", "77W": "9V-SWR.jpg", "B77W": "9V-SWR.jpg"
-    }
-    return mapping.get(code)
+    mapping = {"A359": "9V-SMI.jpg", "A388": "9V-SKY.jpg", "B38M": "9V-MBO.jpg", "78X": "9V-SCK.avif", "B78X": "9V-SCK.avif", "77W": "9V-SWR.jpg", "B77W": "9V-SWR.jpg"}
+    return mapping.get(str(ac_code).upper().strip())
 
 def fmt_t(dt_str): return dt_str[-5:] if dt_str else "---"
 
 def calc_eta_str(est_iso):
-    """Live countdown for arriving flights."""
     try:
         est = datetime.fromisoformat(est_iso.replace("Z", "+00:00"))
         delta = (est - datetime.now(timezone.utc)).total_seconds()
@@ -62,14 +59,13 @@ def calc_eta_str(est_iso):
         return " (Arriving shortly)"
     except: return ""
 
-# --- 3. DATA FUSION ENGINE ---
+# --- 3. SEARCH ENGINE ---
 
 def fetch_search_data(f_num, date_str):
-    """Combines SIA Official Gateway and AirLabs operational data."""
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
     iata = f"SQ{f_num}".upper()
-    
     sq_leg, sq_status = {}, "Unknown"
+    
     try:
         url = "https://apigw.singaporeair.com/api/uat/v2/flightstatus/getbynumber"
         headers = {"api_key": st.secrets["SIA_STATUS_KEY"], "x-csl-client-id": "SPD", "x-csl-client-uuid": str(uuid.uuid4())}
@@ -113,7 +109,7 @@ def fetch_search_data(f_num, date_str):
 # --- 4. UI COMPONENTS ---
 
 def render_search_manifest(data):
-    """The Flight Search Card featuring grids and terminal info."""
+    """The detailed Flight Search Card with Grids and Terminal info."""
     leg = data["leg"]
     arr_terminal = "Terminal 2/3" if (leg['arr_iata'] == "SIN" and leg['arr_term'] == "TBA") else leg['arr_term']
     
@@ -141,22 +137,17 @@ def render_search_manifest(data):
     d3.markdown(f"<div class='spec-label'>Estimated Arr</div><div class='time-box'>{leg['times']['est_arr'] or '---'}</div>", unsafe_allow_html=True)
 
 def render_fr24_card(flight_iata, telemetry=None):
-    """The Sidebar Card for the Interactive Radar."""
     f_num = flight_iata.replace("SQ", "").strip()
     data = fetch_search_data(f_num, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    
     if data["leg"]:
         leg = data["leg"]
-        st.markdown(f"""<div class="fr-header"><span class="fr-callsign">{flight_iata}</span><span class="fr-iata">{leg['fn']}</span><span class="fr-type">{leg['ac_type']}</span></div><div style="color:#ccc; font-size:14px; margin-bottom:10px;">Singapore Airlines</div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="fr-header"><span class="fr-callsign">{flight_iata}</span><span class="fr-iata">{leg['fn']}</span><span class="fr-type">{leg['ac_type']}</span></div>""", unsafe_allow_html=True)
         img = get_ac_image(leg['ac_type'])
         if img: st.image(img, use_container_width=True)
         st.markdown(f"""<div class="fr-route-box"><div style="text-align:left;"><div class="fr-city">{leg['dep_iata']}</div><div class="spec-label">DEP</div></div><div style="font-size:30px; color:{FR_YELLOW}; transform:rotate(90deg);">✈</div><div style="text-align:right;"><div class="fr-city">{leg['arr_iata']}</div><div class="spec-label">ARR</div></div></div>""", unsafe_allow_html=True)
-        
         eta = calc_eta_str(leg['times']['est_arr']) if data['status'] == "EN-ROUTE" else ""
-        st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST/ACT ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or leg['times']['est_arr'])}{eta}</b></div></div>""", unsafe_allow_html=True)
-        
+        st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or leg['times']['est_arr'])}{eta}</b></div></div>""", unsafe_allow_html=True)
         if telemetry:
-            # Units converted from metric to aviation standard (ft/kts)
             alt_ft = int(telemetry.get('alt', 0) * 3.28084)
             gs_kts = int(telemetry.get('gs', 0) * 0.539957)
             st.markdown(f"""<div class="fr-telemetry"><div><span class="spec-label">ALTITUDE</span><br><b>{alt_ft:,} ft</b></div><div><span class="spec-label">GROUNDSPEED</span><br><b>{gs_kts} kts</b></div></div>""", unsafe_allow_html=True)
@@ -166,48 +157,42 @@ def render_fr24_card(flight_iata, telemetry=None):
 def show_interactive_radar():
     if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
     if "map_zoom" not in st.session_state: st.session_state.map_zoom = 4
-    if "last_radar_fetch" not in st.session_state: st.session_state.last_radar_fetch = 0
-    if "radar_data" not in st.session_state: st.session_state.radar_data = []
-
+    
     col_info, col_map = st.columns([1.5, 2])
     
-    # 5-minute cache to prevent constant loading screens
-    if (time.time() - st.session_state.last_radar_fetch) > 300:
-        with st.empty().container():
-            vid = get_b64("SQ loading screen.mp4")
-            st.markdown(f"""<div style="text-align:center; padding:40px;"><video width="280" autoplay loop muted><source src="data:video/mp4;base64,{vid}" type="video/mp4"></video><p style="color:{SIA_NAVY}; font-weight:bold; margin-top:15px;">Syncing AirLabs Global Feed...</p></div>""", unsafe_allow_html=True)
-            try:
-                st.session_state.radar_data = requests.get(f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}").json().get("response", [])
-                st.session_state.last_radar_fetch = time.time()
-            except: pass
-        st.rerun()
+    # FETCH DATA (CACHE-ENABLED)
+    # The loading video only shows once every 5 minutes when the cache expires
+    with st.spinner("Syncing Global Radar..."):
+        planes = get_global_radar_data(st.secrets['AIRLABS_API_KEY'])
 
-    # Google Hybrid Satellite Implementation
+    # Google Hybrid Map Persistence
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, 
                    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
                    attr='Google', name='Google Hybrid')
     
-    icon_b64 = get_b64("f5c530aa-d922-4920-9313-63a11c7f2921.png")
-    for p in st.session_state.radar_data:
-        lat, lon = p.get('lat'), p.get('lng')
-        if lat and lon:
-            html = f'<div style="transform: rotate({p.get("dir",0)}deg);"><img src="data:image/png;base64,{icon_b64}" width="28" height="28"></div>'
-            folium.Marker([lat, lon], tooltip=p.get('flight_iata','SQ'), icon=folium.DivIcon(html=html, icon_size=(28,28))).add_to(m)
+    plane_icon_b64 = get_b64("f5c530aa-d922-4920-9313-63a11c7f2921.png")
+    for p in planes:
+        if p.get('lat') and p.get('lng'):
+            html = f'<div style="transform: rotate({p.get("dir",0)}deg);"><img src="data:image/png;base64,{plane_icon_b64}" width="28" height="28"></div>'
+            folium.Marker([p['lat'], p['lng']], tooltip=p.get('flight_iata','SQ'), 
+                          icon=folium.DivIcon(html=html, icon_size=(28,28))).add_to(m)
 
     with col_map:
         res = st_folium(m, width="100%", height=800, key="radar_main")
+        # Save center/zoom to session state so interactions don't reset the view
         if res.get("center"): st.session_state.map_center = [res["center"]["lat"], res["center"]["lng"]]
         if res.get("zoom"): st.session_state.map_zoom = res["zoom"]
 
     clicked = res.get("last_object_clicked_tooltip")
     with col_info:
         if clicked:
-            p_data = next((x for x in st.session_state.radar_data if x.get('flight_iata') == clicked), {})
+            p_data = next((x for x in planes if x.get('flight_iata') == clicked), {})
             render_fr24_card(clicked, telemetry=p_data)
         else:
-            st.info("👈 Select an aircraft on the map to view full telemetry.")
+            st.info("👈 Select an aircraft on the map to view full manifest.")
+            # Sidebar manifest list
             with st.container(height=600):
-                for p in st.session_state.radar_data:
+                for p in planes:
                     alt_ft = int(p.get('alt', 0) * 3.28084)
                     gs_kts = int(p.get('gs', 0) * 0.539957)
                     st.markdown(f"**{p.get('flight_iata','SQ')}** | {alt_ft:,} ft | {gs_kts} kts")
@@ -217,7 +202,8 @@ def show_interactive_radar():
 
 menu = st.sidebar.radio("MODE", ["📡 Radar", "🔍 Search", "🗺️ Wayfinding"])
 
-if menu == "📡 Radar": show_interactive_radar()
+if menu == "📡 Radar":
+    show_interactive_radar()
 elif menu == "🔍 Search":
     c1, c2 = st.columns(2)
     f_num = c1.text_input("SQ Number", "11")
@@ -227,5 +213,6 @@ elif menu == "🔍 Search":
         if data["leg"]: render_search_manifest(data)
         else: st.error("No flight found.")
 elif menu == "🗺️ Wayfinding":
-    pdf = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
-    if pdf: st.markdown(f'<iframe src="data:application/pdf;base64,{pdf}" width="100%" height="900"></iframe>', unsafe_allow_html=True)
+    pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
+    if pdf_b64:
+        st.markdown(f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="900"></iframe>', unsafe_allow_html=True)
