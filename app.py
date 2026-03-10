@@ -4,7 +4,6 @@ from streamlit_folium import st_folium
 from datetime import datetime, timezone
 
 # --- 1. CORE STYLING & ASSETS ---
-# Configures the wide layout and custom SIA color palette for a pro tracking feel
 st.set_page_config(page_title="KrisTracker Pro v2.0", page_icon="✈️", layout="wide")
 SIA_NAVY, SIA_GOLD, FR_YELLOW = "#00266B", "#BD9B60", "#ffc107"
 
@@ -74,9 +73,7 @@ def calc_eta_str(est_iso):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_search_data(f_num, date_str):
-    """
-    Combines Official SIA API with AirLabs feed.
-    """
+    """Combines Official SIA API with AirLabs feed."""
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
     iata = f"SQ{f_num}".upper()
     
@@ -191,13 +188,16 @@ def render_fr24_card(flight_iata, telemetry=None):
 # --- 5. INTERACTIVE RADAR ---
 
 def show_interactive_radar():
-    """Handles 5-min caching, Map persistence, and Radar Logic."""
+    """Handles 5-min caching, Map persistence, Radar Logic, and Auto-Zoom on Click."""
+    # State tracking for map center, zoom, and currently selected flight
+    if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
+    if "map_zoom" not in st.session_state: st.session_state.map_zoom = 4
+    if "selected_flight" not in st.session_state: st.session_state.selected_flight = None
     if "last_radar_fetch" not in st.session_state: st.session_state.last_radar_fetch = 0
     if "radar_data" not in st.session_state: st.session_state.radar_data = []
 
     col_info, col_map = st.columns([1.5, 2.5])
     
-    # 5-minute session state timer check
     time_elapsed = time.time() - st.session_state.last_radar_fetch
     refresh_needed = time_elapsed > 300
     
@@ -223,9 +223,8 @@ def show_interactive_radar():
             except: pass
         st.rerun()
 
-    # Map Implementation: GLITCH FIX
-    # The map location is statically initialized. We no longer feed pan/zoom states back into it.
-    m = folium.Map(location=[1.35, 103.8], zoom_start=4, 
+    # Create the map with the current session state center and zoom
+    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, 
                    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
                    attr='Google', name='Google Hybrid', zoom_control=False)
     
@@ -241,22 +240,36 @@ def show_interactive_radar():
             ).add_to(m)
 
     with col_map:
-        # GLITCH FIX: returned_objects restricted to "last_object_clicked_tooltip" only.
-        # This prevents Streamlit from unnecessarily rerunning the script on every pan/zoom.
+        # GLITCH FIX: Map only pushes back tooltips, preventing infinite loop redraws on pans.
         res = st_folium(m, width="100%", height=800, key="radar_main", use_container_width=True, returned_objects=["last_object_clicked_tooltip"])
 
     clicked = res.get("last_object_clicked_tooltip")
+    
+    # --- AUTO ZOOM LOGIC ---
+    # If a new plane is clicked, update the selected flight and force a map re-center
+    if clicked and clicked != st.session_state.selected_flight:
+        st.session_state.selected_flight = clicked
+        
+        # Find the coordinates of the clicked plane
+        clicked_plane = next((x for x in st.session_state.radar_data if x.get('flight_iata') == clicked), None)
+        if clicked_plane and clicked_plane.get('lat') and clicked_plane.get('lng'):
+            # Update session state coordinates and snap the zoom closer
+            st.session_state.map_center = [clicked_plane['lat'], clicked_plane['lng']]
+            st.session_state.map_zoom = 7
+            # Rerun instantly applies the new center/zoom to the map
+            st.rerun()
+
+    # Draw the info panel based on whatever is currently selected
     with col_info:
-        if clicked:
-            p_data = next((x for x in st.session_state.radar_data if x.get('flight_iata') == clicked), {})
-            render_fr24_card(clicked, telemetry=p_data)
+        if st.session_state.selected_flight:
+            p_data = next((x for x in st.session_state.radar_data if x.get('flight_iata') == st.session_state.selected_flight), {})
+            render_fr24_card(st.session_state.selected_flight, telemetry=p_data)
         else:
             st.info("👈 Select an aircraft on the map to view detailed manifest.")
             st.markdown("<div class='section-header'>Active Air Manifest</div>", unsafe_allow_html=True)
             with st.container(height=650):
                 for p in st.session_state.radar_data:
                     ac_type = p.get('aircraft_icao', 'N/A')
-                    
                     raw_speed = p.get('speed')
                     if raw_speed is None: raw_speed = p.get('gs', 0)
                     speed_kts = int(float(raw_speed) * 0.539957) if raw_speed else 0
