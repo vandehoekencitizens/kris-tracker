@@ -228,4 +228,4 @@ elif menu == "🔍 Search":
         else: st.error("No flight found.")
 elif menu == "🗺️ Wayfinding":
     pdf = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
-    if pdf: st.markdown(f'<iframe src="data:application/pdf;base64,{pdf}" width="100%" height="900"></iframe>', unsafe_allow_html=True)v
+    if pdf: st.markdown(f'<iframe src="data:application/pdf;base64,{pdf}" width="100%" height="900"></iframe>', unsafe_allow_html=True)
