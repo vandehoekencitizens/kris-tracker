@@ -76,7 +76,6 @@ def calc_eta_str(est_iso):
 def fetch_search_data(f_num, date_str):
     """
     Combines Official SIA API with AirLabs feed.
-    CACHED: This is the fix that stops the map from reloading/blinking when an aircraft is clicked.
     """
     unified = {"source": "NONE", "leg": None, "status": "Unknown"}
     iata = f"SQ{f_num}".upper()
@@ -100,7 +99,6 @@ def fetch_search_data(f_num, date_str):
 
     al_data = {}
     try:
-        # Search AirLabs for specific flight details
         url = f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={iata}"
         al = requests.get(url, timeout=5).json().get("response")
         if al and date_str in al.get("dep_time", ""): al_data = al
@@ -159,13 +157,12 @@ def render_search_manifest(data):
     d3.markdown(f"<div class='spec-label'>Estimated Arr</div><div class='time-box'>{leg['times']['est_arr'] or '---'}</div>", unsafe_allow_html=True)
 
 def render_fr24_card(flight_iata, telemetry=None):
-    """The Sidebar Card for the Interactive Radar. Terminologies and extractions safely fixed."""
+    """The Sidebar Card for the Interactive Radar."""
     f_num = flight_iata.replace("SQ", "").strip()
     data = fetch_search_data(f_num, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     
     if data["leg"]:
         leg = data["leg"]
-        # Prioritize telemetry aircraft ICAO if available, fallback to scheduled leg type
         ac_type = telemetry.get('aircraft_icao') if telemetry and telemetry.get('aircraft_icao') else leg['ac_type']
         
         st.markdown(f"""<div class="fr-header"><span class="fr-callsign">{flight_iata}</span><span class="fr-iata">{leg['fn']}</span><span class="fr-type">{ac_type}</span></div><div style="color:#ccc; font-size:14px; margin-bottom:10px;">Singapore Airlines</div>""", unsafe_allow_html=True)
@@ -175,16 +172,14 @@ def render_fr24_card(flight_iata, telemetry=None):
         
         st.markdown(f"""<div class="fr-route-box"><div style="text-align:left;"><div class="fr-city">{leg['dep_iata']}</div><div class="spec-label">DEP</div></div><div style="font-size:30px; color:{FR_YELLOW}; transform:rotate(90deg);">✈</div><div style="text-align:right;"><div class="fr-city">{leg['arr_iata']}</div><div class="spec-label">ARR</div></div></div>""", unsafe_allow_html=True)
         
-        # Load estimated arrival specifically
         est_arr_raw = leg['times']['est_arr']
         eta = calc_eta_str(est_arr_raw) if data['status'] == "EN-ROUTE" else ""
         
         st.markdown(f"""<div class="fr-grid"><div><span class="spec-label">SCHED DEP</span><br><b>{fmt_t(leg['times']['sch_dep'])}</b></div><div><span class="spec-label">SCHED ARR</span><br><b>{fmt_t(leg['times']['sch_arr'])}</b></div><div><span class="spec-label">ACTUAL DEP</span><br><b>{fmt_t(leg['times']['act_dep'])}</b></div><div><span class="spec-label">EST/ACT ARR</span><br><b style="color:#28a745;">{fmt_t(leg['times']['act_arr'] or est_arr_raw)}{eta}</b></div></div>""", unsafe_allow_html=True)
         
         if telemetry:
-            # Safe extraction for Speed and Altitude to prevent 0kts bug
             raw_speed = telemetry.get('speed')
-            if raw_speed is None: raw_speed = telemetry.get('gs', 0)  # Fallback just in case
+            if raw_speed is None: raw_speed = telemetry.get('gs', 0)
             
             raw_alt = telemetry.get('alt', 0)
             
@@ -197,8 +192,6 @@ def render_fr24_card(flight_iata, telemetry=None):
 
 def show_interactive_radar():
     """Handles 5-min caching, Map persistence, and Radar Logic."""
-    if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
-    if "map_zoom" not in st.session_state: st.session_state.map_zoom = 4
     if "last_radar_fetch" not in st.session_state: st.session_state.last_radar_fetch = 0
     if "radar_data" not in st.session_state: st.session_state.radar_data = []
 
@@ -230,8 +223,9 @@ def show_interactive_radar():
             except: pass
         st.rerun()
 
-    # Render base map
-    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, 
+    # Map Implementation: GLITCH FIX
+    # The map location is statically initialized. We no longer feed pan/zoom states back into it.
+    m = folium.Map(location=[1.35, 103.8], zoom_start=4, 
                    tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
                    attr='Google', name='Google Hybrid', zoom_control=False)
     
@@ -239,7 +233,6 @@ def show_interactive_radar():
     for p in st.session_state.radar_data:
         lat, lon = p.get('lat'), p.get('lng')
         if lat and lon:
-            # Using 'dir' for aircraft heading
             html = f'<div style="transform: rotate({p.get("dir",0)}deg);"><img src="data:image/png;base64,{icon_b64}" width="28" height="28"></div>'
             folium.Marker(
                 [lat, lon], 
@@ -248,15 +241,13 @@ def show_interactive_radar():
             ).add_to(m)
 
     with col_map:
-        # Returned objects narrowed to limit unnecessary re-evaluations
-        res = st_folium(m, width="100%", height=800, key="radar_main", use_container_width=True, returned_objects=["last_object_clicked_tooltip", "center", "zoom"])
-        if res.get("center"): st.session_state.map_center = [res["center"]["lat"], res["center"]["lng"]]
-        if res.get("zoom"): st.session_state.map_zoom = res["zoom"]
+        # GLITCH FIX: returned_objects restricted to "last_object_clicked_tooltip" only.
+        # This prevents Streamlit from unnecessarily rerunning the script on every pan/zoom.
+        res = st_folium(m, width="100%", height=800, key="radar_main", use_container_width=True, returned_objects=["last_object_clicked_tooltip"])
 
     clicked = res.get("last_object_clicked_tooltip")
     with col_info:
         if clicked:
-            # The click fetches from local memory now thanks to caching on fetch_search_data!
             p_data = next((x for x in st.session_state.radar_data if x.get('flight_iata') == clicked), {})
             render_fr24_card(clicked, telemetry=p_data)
         else:
