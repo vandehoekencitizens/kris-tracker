@@ -193,10 +193,10 @@ def render_fr24_card(flight_iata, telemetry=None):
                 <div><span class="spec-label">GROUNDSPEED</span><br><b>{gs_kts} kts</b></div>
             </div>""", unsafe_allow_html=True)
 
-# --- 5. INTERACTIVE RADAR (HYBRID SATELLITE IMPLEMENTED) ---
+# --- 5. INTERACTIVE RADAR (HYBRID SATELLITE + PERSISTENCE) ---
 
 def show_interactive_radar():
-    # PERSISTENT STATE - Retains center/zoom during clicks
+    # ANTI-RELOAD MAP FEATURE: Retains center/zoom during clicks
     if "map_center" not in st.session_state: st.session_state.map_center = [1.35, 103.8]
     if "map_zoom" not in st.session_state: st.session_state.map_zoom = 4
 
@@ -255,7 +255,7 @@ def show_interactive_radar():
             st.info("👈 Select an aircraft on the map to view full telemetry.")
             with st.container(height=600):
                 for p in planes:
-                    # Applied correct math conversions here too
+                    # Applied correct math conversions for telemetry list
                     alt_ft = int(p.get('alt', 0) * 3.28084)
                     gs_kts = int(p.get('gs', 0) * 0.539957)
                     st.markdown(f"**{p.get('flight_iata','SQ')}** | {alt_ft:,} ft | {gs_kts} kts")
@@ -277,11 +277,6 @@ elif menu == "🔍 Search":
         if data["leg"]: render_search_manifest(data)
         else: st.error("No flight found.")
 
-elif menu == "🗺️ Wayfinding":
-    pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
-    if pdf_b64:
-        st.markdown(f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="900"></iframe>', unsafe_allow_html=True)
-    else: st.error("PDF file not found.")
 elif menu == "🗺️ Wayfinding":
     pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
     if pdf_b64:
