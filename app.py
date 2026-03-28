@@ -5,179 +5,141 @@ from datetime import datetime, timezone
 
 # --- 1. CORE STYLING & ASSETS ---
 st.set_page_config(page_title="KrisTracker Pro v2.0", page_icon="✈️", layout="wide")
+
 SIA_NAVY, SIA_GOLD, FR_YELLOW = "#00266B", "#BD9B60", "#ffc107"
 
 st.markdown(f"""<style>
-    [data-testid="stSidebar"] {{ min-width: 210px !important; max-width: 210px !important; }}
-    .spec-label {{ color: #666; font-size: 11px; text-transform: uppercase; font-weight: bold; }}
-    .spec-value {{ color: {SIA_NAVY}; font-size: 17px; font-weight: 700; }}
-    .status-pill {{ background: {SIA_NAVY}; color: white; padding: 4px 12px; border-radius: 20px; }}
+[data-testid="stSidebar"] {{ min-width: 210px !important; max-width: 210px !important; }}
+.spec-label {{ color: #666; font-size: 11px; text-transform: uppercase; font-weight: bold; }}
+.spec-value {{ color: {SIA_NAVY}; font-size: 17px; font-weight: 700; }}
+.status-pill {{ background: {SIA_NAVY}; color: white; padding: 4px 12px; border-radius: 20px; }}
+.section-header {{ border-bottom: 2px solid #eee; font-weight: 800; }}
+.fr-callsign {{ color: {FR_YELLOW}; font-size: 26px; font-weight: 900; }}
 </style>""", unsafe_allow_html=True)
 
 # --- 2. HELPERS ---
-
-def get_b64(file_path):
-    try:
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                return base64.b64encode(f.read()).decode('utf-8')
-    except:
-        pass
+def get_b64(path):
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
     return ""
 
-def fmt_t(dt_str):
-    try:
-        return dt_str[11:16]
-    except:
-        return "---"
+def get_ac_image(ac_code):
+    mapping = {
+        "A359": "9V-SMI.jpg",
+        "A388": "9V-SKY.jpg",
+        "B38M": "9V-MBO.jpg",
+        "77W": "9V-SWR.jpg",
+    }
+    return mapping.get(str(ac_code).upper())
 
-def calc_eta_str(est_iso):
-    try:
-        if not est_iso:
-            return ""
-        est = datetime.fromisoformat(est_iso.replace("Z", "+00:00"))
-        delta = (est - datetime.now(timezone.utc)).total_seconds()
-        if delta > 0:
-            h, rem = divmod(int(delta), 3600)
-            m, _ = divmod(rem, 60)
-            return f" (In {h}h {m}m)"
-        return " (Arriving)"
-    except:
-        return ""
+def fmt_t(t):
+    return t[-5:] if t else "---"
 
-# --- 3. AIRLABS DATA ENGINE ---
-
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_radar_data():
+# --- 3. AIRLABS ONLY DATA ---
+@st.cache_data(ttl=120)
+def fetch_airlabs(flight_iata=None):
     try:
         url = f"https://airlabs.co/api/v9/flights?airline_iata=SQ&api_key={st.secrets['AIRLABS_API_KEY']}"
-        res = requests.get(url, timeout=10).json()
-        return res.get("response", [])
+        return requests.get(url, timeout=10).json().get("response", [])
     except:
         return []
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_flight(flight_iata):
+# --- 4. SEARCH ---
+def search_flight(flight_num):
     try:
-        url = f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={flight_iata}"
-        res = requests.get(url, timeout=10).json()
-        return res.get("response")
+        iata = f"SQ{flight_num}"
+        url = f"https://airlabs.co/api/v9/flight?api_key={st.secrets['AIRLABS_API_KEY']}&flight_iata={iata}"
+        return requests.get(url, timeout=10).json().get("response")
     except:
         return None
 
-# --- 4. UI ---
+# --- 5. SEARCH UI ---
+def render_search():
+    st.title("🔍 Flight Search")
+    fnum = st.text_input("Flight Number (SQ)", "11")
 
-def render_fr24_card(flight_iata, data):
-    st.markdown(f"### ✈ {flight_iata}")
+    if st.button("Search"):
+        data = search_flight(fnum)
+        if not data:
+            st.error("No data found")
+            return
 
-    if not data:
-        st.warning("No data available")
-        return
+        st.subheader(f"{data.get('flight_iata')}")
 
-    st.markdown(f"**Status:** {data.get('status','---')}")
-    st.markdown(f"**Aircraft:** {data.get('aircraft_icao','---')}")
-    st.markdown(f"**From:** {data.get('dep_iata','---')} → **To:** {data.get('arr_iata','---')}")
+        col1, col2 = st.columns(2)
+        col1.write("Departure: " + str(data.get("dep_iata")))
+        col2.write("Arrival: " + str(data.get("arr_iata")))
 
-    st.markdown("---")
-
-    st.markdown(f"""
-    **Scheduled Departure:** {fmt_t(data.get('dep_time'))}  
-    **Scheduled Arrival:** {fmt_t(data.get('arr_time'))}  
-    """)
-
-    if data.get("arr_estimated"):
-        st.markdown(f"**ETA:** {fmt_t(data.get('arr_estimated'))}{calc_eta_str(data.get('arr_estimated'))}")
-
-# --- 5. RADAR ---
-
-def show_interactive_radar():
-    if "map_center" not in st.session_state:
-        st.session_state.map_center = [1.35, 103.8]
-    if "map_zoom" not in st.session_state:
-        st.session_state.map_zoom = 4
-    if "selected_flight" not in st.session_state:
-        st.session_state.selected_flight = None
+# --- 6. RADAR ---
+def render_radar():
     if "radar_data" not in st.session_state:
-        st.session_state.radar_data = []
+        st.session_state.radar_data = fetch_airlabs()
 
-    # Refresh logic
-    if st.button("🔄 Refresh Radar"):
-        st.session_state.radar_data = fetch_radar_data()
+    if st.button("🔄 Refresh"):
+        st.session_state.radar_data = fetch_airlabs()
 
-    # Fetch if empty
-    if not st.session_state.radar_data:
-        st.session_state.radar_data = fetch_radar_data()
+    col_info, col_map = st.columns([1.5, 2.5])
 
-    col_map, col_info = st.columns([2.5, 1.5])
+    # --- MAP (UNCHANGED) ---
+    m = folium.Map(
+        location=[1.35, 103.8],
+        zoom_start=4,
+        tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+        attr='Google'
+    )
 
-    # MAP
-    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="cartodbpositron")
+    icon_b64 = get_b64("icon.png")
 
     for p in st.session_state.radar_data:
-        if p.get("lat") and p.get("lng"):
-            folium.Marker(
-                [p["lat"], p["lng"]],
-                tooltip=p.get("flight_iata"),
-            ).add_to(m)
+        if not p.get("lat") or not p.get("lng"):
+            continue
+
+        html = f"""
+        <div style="transform: rotate({p.get('dir',0)}deg);">
+            <img src="data:image/png;base64,{icon_b64}" width="25"/>
+        </div>
+        """
+
+        folium.Marker(
+            [p["lat"], p["lng"]],
+            tooltip=p.get("flight_iata"),
+            icon=folium.DivIcon(html=html)
+        ).add_to(m)
 
     with col_map:
-        res = st_folium(m, width="100%", height=800, returned_objects=["last_object_clicked_tooltip"])
+        res = st_folium(m, width="100%", height=700)
 
-    clicked = res.get("last_object_clicked_tooltip")
-
-    if clicked and clicked != st.session_state.selected_flight:
-        st.session_state.selected_flight = clicked
-        st.rerun()
-
-    # INFO PANEL
     with col_info:
-        if st.session_state.selected_flight:
-            data = fetch_flight(st.session_state.selected_flight)
-            render_fr24_card(st.session_state.selected_flight, data)
-        else:
-            st.info("Click a plane on the map")
+        if res.get("last_object_clicked_tooltip"):
+            flight = next((x for x in st.session_state.radar_data if x.get("flight_iata") == res["last_object_clicked_tooltip"]), None)
 
-# --- 6. SEARCH (AirLabs ONLY) ---
+            if flight:
+                st.markdown(f"### {flight.get('flight_iata')}")
+                st.write("Aircraft:", flight.get("aircraft_icao"))
+                st.write("Speed:", flight.get("speed"))
+                st.write("Altitude:", flight.get("alt"))
 
-def search_flight():
-    st.title("🔍 Flight Search")
-
-    flight = st.text_input("Flight IATA (e.g. SQ11)")
-
-    if st.button("Search") and flight:
-        data = fetch_flight(flight.upper())
-        if data:
-            render_fr24_card(flight.upper(), data)
-        else:
-            st.error("Flight not found")
+                img = get_ac_image(flight.get("aircraft_icao"))
+                if img and os.path.exists(img):
+                    st.image(img)
 
 # --- 7. WAYFINDING ---
-
-def wayfinding():
+def render_wayfinding():
     st.title("🗺️ Wayfinding")
+    pdf = get_b64("wayfinding.pdf")
 
-    pdf_b64 = get_b64("Singapore-Changi-Airport-Transit-Area-Wayfinding.pdf")
-
-    if pdf_b64:
-        st.markdown(f"""
-        <iframe src="data:application/pdf;base64,{pdf_b64}" 
-        width="100%" height="900" style="border:none;"></iframe>
-        """, unsafe_allow_html=True)
+    if pdf:
+        st.markdown(f'<iframe src="data:application/pdf;base64,{pdf}" width="100%" height="900"></iframe>', unsafe_allow_html=True)
     else:
-        st.warning("PDF not found")
+        st.warning("No PDF found")
 
 # --- 8. NAV ---
-
-menu = st.sidebar.radio("Mode", ["📡 Radar", "🔍 Search", "🗺️ Wayfinding"])
+menu = st.sidebar.radio("MODE", ["📡 Radar", "🔍 Search", "🗺️ Wayfinding"])
 
 if menu == "📡 Radar":
-    show_interactive_radar()
-
+    render_radar()
 elif menu == "🔍 Search":
-    search_flight()
-
+    render_search()
 elif menu == "🗺️ Wayfinding":
-    wayfinding()
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**KrisTracker Pro** v2 (AirLabs Only)")
+    render_wayfinding()
